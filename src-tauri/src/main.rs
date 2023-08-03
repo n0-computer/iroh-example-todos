@@ -3,8 +3,13 @@
     windows_subsystem = "windows"
 )]
 mod todo;
+
 use std::sync::Mutex;
-use todo::{Todo, TodoApp};
+use std::time::Duration;
+use tauri::Manager;
+use uuid::Uuid;
+
+use self::todo::{Todo, TodoApp};
 
 struct AppState {
     app: Mutex<TodoApp>,
@@ -15,6 +20,31 @@ fn main() {
     tauri::Builder::default()
         .manage(AppState {
             app: Mutex::from(app),
+        })
+        .setup(|app| {
+            let handle = app.handle();
+            tauri::async_runtime::spawn(async move {
+                let mut i = 0;
+                loop {
+                    i += 1;
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    handle
+                        .emit_all("update-all", ())
+                        .expect("unable to send event");
+
+                    new_todo(
+                        handle.state(),
+                        Todo {
+                            id: Uuid::new_v4().to_string(),
+                            label: format!("fix backend: {i}"),
+                            done: false,
+                            is_delete: false,
+                        },
+                    );
+                }
+            });
+
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_todos,
