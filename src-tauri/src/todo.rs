@@ -10,7 +10,7 @@ pub struct Todo {
 }
 
 pub struct TodoApp {
-    conn: Connection,
+    pub conn: Connection,
 }
 
 impl TodoApp {
