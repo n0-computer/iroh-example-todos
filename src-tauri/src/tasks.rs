@@ -76,7 +76,7 @@ pub struct Tasks {
 }
 
 impl Tasks {
-    pub async fn new(on_insert: Option<OnInsertCallback>) -> Result<Self> {
+    pub async fn new(ticket: Option<String>, on_insert: Option<OnInsertCallback>) -> Result<Self> {
         // parse or generate our keypair
         // let keypair = match args.private_key {
         //     None => Keypair::generate(),
@@ -136,26 +136,19 @@ impl Tasks {
             (endpoint, gossip, initial_endpoints)
         };
 
-        // let (topic, peers) = match &args.command {
-        //     Command::Open { doc_name } => {
-        //         let topic: TopicId = blake3::hash(doc_name.as_bytes()).into();
-        //         println!(
-        //             "> opening document {doc_name} as namespace {} and waiting for peers to join us...",
-        //             fmt_hash(topic.as_bytes())
-        //         );
-        //         (topic, vec![])
-        //     }
-        //     Command::Join { ticket } => {
-        //         let Ticket { topic, peers } = Ticket::from_str(ticket)?;
-        //         println!("> joining topic {topic} and connecting to {peers:?}",);
-        //         (topic, peers)
-        //     }
-        // };
-
-        // TODO: allow opening an existing one
-        let doc_name = "tasks-01";
-        let topic: TopicId = blake3::hash(doc_name.as_bytes()).into();
-        let peers = Vec::new();
+        let (topic, peers) = match ticket {
+            None => {
+                // TODO: allow opening an existing one
+                let doc_name = "tasks-01";
+                let topic: TopicId = blake3::hash(doc_name.as_bytes()).into();
+                (topic, vec![])
+            }
+            Some(ticket) => {
+                let Ticket { topic, peers } = Ticket::from_str(&ticket)?;
+                println!("> joining topic {topic} and connecting to {peers:?}",);
+                (topic, peers)
+            }
+        };
 
         let our_ticket = {
             // add our local endpoints to the ticket and print it for others to join
