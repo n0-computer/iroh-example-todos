@@ -40,7 +40,7 @@ function App() {
   function setTicket(ticket: string) {
     // this is the effect for the modal
     // otherwise just get-todos
-    invoke<Todo[]>('set_ticket').then((res) => {
+    invoke<Todo[]>('set_ticket', {ticket}).then((res) => {
       getTodos()
     })
   }
