@@ -1,18 +1,27 @@
 import { useAtom } from 'jotai'
 import { v4 as randomUUID } from 'uuid'
-import { useState, useCallback, KeyboardEventHandler } from 'react'
+import { useState, useCallback, KeyboardEventHandler, useEffect } from 'react'
 import { activeTodoCountAtom, allTodosAtom, anyTodosDone, filterType } from '../store/todos'
 import { Todo } from '../types/todo'
 import TodoItem from './TodoItem'
 import { invoke } from '@tauri-apps/api'
 
 const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
+  const [ticket, setTicket] = useState('');
   const [, setTodos] = useAtom(allTodosAtom)
   const [type, setType] = useAtom(filterType)
   const [activeCount] = useAtom(activeTodoCountAtom)
   const [anyDone] = useAtom(anyTodosDone)
 
   const [newTodo, setNewTodo] = useState('')
+
+  useEffect(() => {
+    invoke<string>('get_ticket').then((res) => {
+        console.log("get ticket");
+        console.log(res);
+        setTicket(res)
+    })
+  }, [])
 
   const addTodo = async (label: string, id: string) => {
     invoke('new_todo', { todo: { id, label, done: false, is_delete: false } })
@@ -53,6 +62,16 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
     <>
       <header className="header">
         <h1>todos</h1>
+        <a style={
+          {
+            position: "absolute",
+            width: "100%",
+            textAlign: "center",
+            color: "#b83f45",
+            top: -30,
+            cursor: "pointer",
+          }
+        } onClick={() => navigator.clipboard.writeText(ticket)}>Copy Ticket</a>
         <input
           type="text"
           className="new-todo"
