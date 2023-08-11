@@ -23,9 +23,7 @@ const TodoItem: React.FC<{ todo: Todo }> = ({ todo }) => {
   }, 500)
 
   const deleteTodo = useCallback(() => {
-    invoke('update_todo', {
-      todo: { ...todo, is_delete: true }
-    })
+    invoke('delete', { id: todo.id })
   }, [todo])
 
   const onDelete = () => {

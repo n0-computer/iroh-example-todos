@@ -58,7 +58,9 @@ fn main() {
 #[derive(Debug)]
 enum Cmd {
     /// Create a new todo
-    Add { id: String, description: String },
+    Add { id: String, label: String },
+    /// Change description of the todo
+    Update {id: String, label: String},
     /// Toggle whether or not the todo is done
     ToggleDone { id: String },
     /// Remove a todo
@@ -124,7 +126,7 @@ async fn new_todo(
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<bool, String> {
     println!("new_todo called from app");
-    let description = todo.label.clone();
+    let label = todo.label.clone();
     let id = todo.id.clone();
     let result = {
         let app = state.app.lock().unwrap();
@@ -132,7 +134,7 @@ async fn new_todo(
     };
     let (tx, rx) = oneshot::channel();
     cmd_tx
-        .send((Cmd::Add { id, description }, tx))
+        .send((Cmd::Add { id, label }, tx))
         .await
         .unwrap();
     rx.await.unwrap();
@@ -140,11 +142,21 @@ async fn new_todo(
 }
 
 #[tauri::command]
-fn update_todo(state: tauri::State<AppState>, todo: Todo) -> bool {
+async fn update_todo(
+    state: tauri::State<'_, AppState>,
+    todo: Todo,
+    cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
+) -> Result<(), String> {
     println!("update_todo called from app");
-    let app = state.app.lock().unwrap();
-    let result = app.update_todo(todo);
-    result
+    let id = todo.id;
+    let label = todo.label;
+    let (tx, rx) = oneshot::channel();
+    cmd_tx
+        .send((Cmd::Update {id, label},  tx))
+        .await
+        .unwrap();
+    rx.await.unwrap();
+    Ok(())
 }
 
 #[tauri::command]
@@ -280,9 +292,9 @@ async fn handle_command(
     answer_tx: oneshot::Sender<CmdAnswer>,
 ) -> Result<()> {
     match cmd {
-        Cmd::Add { id, description } => {
-            println!("adding todo: {description}");
-            task.add(id, description).await?;
+        Cmd::Add { id, label } => {
+            println!("adding todo: {label}");
+            task.add(id, label).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
         }
         Cmd::ToggleDone { id } => {
@@ -301,6 +313,10 @@ async fn handle_command(
         Cmd::GetTicket => {
             println!("getting ticket");
             answer_tx.send(CmdAnswer::Ticket(task.ticket())).unwrap();
+        }
+        Cmd::Update { id, label } => {
+            task.update(id, label).await?;
+            answer_tx.send(CmdAnswer::Ok).unwrap();
         }
         cmd => {
             answer_tx.send(CmdAnswer::UnexpectedCmd).unwrap();

@@ -62,7 +62,16 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
     <>
       <header className="header">
         <h1>todos</h1>
-
+        <a style={
+          {
+            position: "absolute",
+            width: "100%",
+            textAlign: "center",
+            color: "#b83f45",
+            top: -30,
+            cursor: "pointer",
+          }
+        } onClick={() => navigator.clipboard.writeText(ticket)}>Copy Ticket</a>
         <input
           type="text"
           className="new-todo"
@@ -110,9 +119,6 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
           </button>
         )}
       </footer>
-      <div style={{position: "fixed", bottom: 0, left: 0, marginLeft: 16, width: 300, overflowWrap: "anywhere"}}>
-        <p>Join Ticket: {ticket}</p>
-      </div>
     </>
   )
 }

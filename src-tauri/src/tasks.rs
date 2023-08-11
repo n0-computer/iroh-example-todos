@@ -252,9 +252,14 @@ impl Tasks {
     }
 
     pub async fn delete(&mut self, id: String) -> Result<()> {
-        println!("delete {id}");
         let mut task = self.get_task(id.clone()).await?;
         task.is_delete = true;
+        self.update_task(id.as_bytes(), task).await
+    }
+
+    pub async fn update(&mut self, id: String, label: String) -> Result<()> {
+        let mut task = self.get_task(id.clone()).await?;
+        task.label = label;
         self.update_task(id.as_bytes(), task).await
     }
 
