@@ -2,16 +2,19 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
-mod iroh_bytes_handler;
 mod tasks;
 mod todo;
+mod iroh_node;
 
 use anyhow::Result;
 use std::sync::Mutex;
+use std::net::SocketAddr;
 use tauri::Manager;
 use tokio::sync::{mpsc, oneshot};
+use futures::{Stream, StreamExt};
+use iroh_net::defaults::default_derp_map;
+use iroh_net::tls::Keypair;
 
-use self::iroh_bytes_handler::IrohBytesHandlers;
 use self::tasks::{Task, Tasks};
 use self::todo::{Todo, TodoApp};
 
@@ -223,11 +226,18 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<(Cmd, oneshot::Sender<CmdAnswer>)>(8);
     handle.manage(cmd_tx);
 
+    let keypair = Keypair::generate();
+    let derp_map = default_derp_map();
+    let bind_addr: SocketAddr = format!("0.0.0.0:0").parse().unwrap();
+
+    let iroh = iroh_node::Iroh::new(keypair, Some(derp_map), bind_addr, None).await?;
+
     let mut tasks = None;
     println!("waiting for task create command...");
     while let Some((cmd, answer_tx)) = cmd_rx.recv().await {
+        let iroh_client = iroh.client();
         let tasks_updater = handle.clone();
-        tasks = handle_start_command(tasks_updater, cmd, answer_tx).await?;
+        tasks = handle_start_command(tasks_updater, cmd, answer_tx, iroh_client).await?;
         if tasks.is_some() { 
             println!("tasks created!");
             break; 
@@ -236,6 +246,23 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
 
     let mut tasks = tasks.expect("checked above");
     println!("tasks list created!");
+
+    let mut events = tasks.doc_subscribe().await?;
+    let events_handle = tokio::spawn(async move {
+        while let Some(Ok(event)) = events.next().await {
+            match event {
+                iroh::sync::LiveEvent::InsertRemote => {
+                    // TODO: need an `on_download` callback, this sleep
+                    // allows for downloading the content before trying to get it
+                    // from the store
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                _ => {}
+            }
+           handle.emit_all("update-all", ())
+                .expect("unable to send update event");
+        }
+    });
 
     println!("waiting for cmds...");
     while let Some((cmd, answer_tx)) = cmd_rx.recv().await {
@@ -246,30 +273,22 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
     }
 
     println!("shutting down tasks list...");
-    tasks.shutdown().await?;
-
-    handle
-        .emit_all("update-all", ())
-        .expect("unable to send event");
-
+    events_handle.abort();
+    iroh.shutdown();
     Ok(())
 }
 
-    async fn handle_start_command<R: tauri::Runtime>(handle: tauri::AppHandle<R>, cmd: Cmd, answer_tx: oneshot::Sender<CmdAnswer>) -> Result<Option<Tasks>> {
-    let on_insert = Box::new(move |_origin, _entry| {
-        handle.emit_all("update-all", ())
-            .expect("unable to send update event");
-    });
+    async fn handle_start_command<R: tauri::Runtime>(handle: tauri::AppHandle<R>, cmd: Cmd, answer_tx: oneshot::Sender<CmdAnswer>, iroh: iroh::client::mem::Iroh) -> Result<Option<Tasks>> {
     match cmd {
         Cmd::NewList => {
             println!("new list");
-            let tasks = Tasks::new(None, Some(on_insert)).await?;
+            let tasks = Tasks::new(None, iroh).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
             Ok(Some(tasks))
         }
         Cmd::SetTicket {ticket } => {
             println!("set ticket: {ticket}");
-            let tasks = Tasks::new(Some(ticket), Some(on_insert)).await?;
+            let tasks = Tasks::new(Some(ticket), iroh).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
             Ok(Some(tasks))
         }
