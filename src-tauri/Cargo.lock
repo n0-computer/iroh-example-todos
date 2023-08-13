@@ -168,11 +168,14 @@ dependencies = [
  "data-encoding",
  "futures",
  "iroh",
+ "iroh-bytes",
  "iroh-gossip",
+ "iroh-net",
  "iroh-sync",
  "num_cpus",
  "once_cell",
  "postcard",
+ "quic-rpc",
  "quinn",
  "rusqlite",
  "serde",
@@ -441,13 +444,13 @@ dependencies = [
 
 [[package]]
 name = "bao-tree"
-version = "0.5.4"
+version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17d1d83f5eb0105ea694e65583a669309878080f41305f55f82983eaf953667d"
+checksum = "ccc44be8887c38b513a99e3408cb6811f55e6397e741981660a18b197c3d4708"
 dependencies = [
- "blake3",
  "bytes",
  "futures",
+ "iroh-blake3",
  "iroh-io",
  "positioned-io",
  "range-collections",
@@ -1509,6 +1512,12 @@ dependencies = [
  "quote",
  "syn 1.0.109",
 ]
+
+[[package]]
+name = "either"
+version = "1.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a26ae43d7bcc3b814de94796a5e736d4029efb0ee900c12e2d54c993ad1a1e07"
 
 [[package]]
 name = "elliptic-curve"
@@ -2715,7 +2724,6 @@ version = "0.5.1"
 dependencies = [
  "anyhow",
  "bao-tree",
- "blake3",
  "bytes",
  "clap",
  "config",
@@ -2725,6 +2733,7 @@ dependencies = [
  "dirs-next",
  "flume",
  "futures",
+ "genawaiter",
  "hex",
  "indicatif",
  "iroh-bytes",
@@ -2733,8 +2742,11 @@ dependencies = [
  "iroh-metrics",
  "iroh-net",
  "iroh-sync",
+ "itertools",
  "multibase",
  "num_cpus",
+ "once_cell",
+ "parking_lot",
  "portable-atomic",
  "postcard",
  "quic-rpc",
@@ -2754,12 +2766,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "iroh-blake3"
+version = "1.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9446c3ff33feef14809b17e90178caa73bf184ed5054337485a0b002bc7197e"
+dependencies = [
+ "arrayref",
+ "arrayvec",
+ "cc",
+ "cfg-if",
+ "constant_time_eq",
+]
+
+[[package]]
 name = "iroh-bytes"
 version = "0.5.0"
 dependencies = [
  "anyhow",
  "bao-tree",
- "blake3",
  "bytes",
  "data-encoding",
  "derive_more 1.0.0-beta.2",
@@ -2789,10 +2813,9 @@ dependencies = [
 
 [[package]]
 name = "iroh-gossip"
-version = "0.4.1"
+version = "0.5.1"
 dependencies = [
  "anyhow",
- "blake3",
  "bytes",
  "data-encoding",
  "derive_more 1.0.0-beta.2",
@@ -2800,6 +2823,7 @@ dependencies = [
  "futures",
  "genawaiter",
  "indexmap 2.0.0",
+ "iroh-blake3",
  "iroh-metrics",
  "iroh-net",
  "once_cell",
@@ -2905,16 +2929,17 @@ dependencies = [
 
 [[package]]
 name = "iroh-sync"
-version = "0.1.0"
+version = "0.5.1"
 dependencies = [
  "anyhow",
- "blake3",
  "bytes",
  "crossbeam",
  "derive_more 1.0.0-beta.2",
  "ed25519-dalek",
  "hex",
+ "iroh-blake3",
  "iroh-bytes",
+ "iroh-metrics",
  "once_cell",
  "ouroboros",
  "parking_lot",
@@ -2935,6 +2960,15 @@ dependencies = [
  "hermit-abi",
  "rustix 0.38.4",
  "windows-sys 0.48.0",
+]
+
+[[package]]
+name = "itertools"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1c173a5686ce8bfa551b3563d0c2170bf24ca44da99c7ca4bfdab5418c3fe57"
+dependencies = [
+ "either",
 ]
 
 [[package]]
