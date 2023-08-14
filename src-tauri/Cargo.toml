@@ -21,11 +21,11 @@ tauri = { version = "1.4", features = ["api-all"] }
 tokio = { version = "1" }
 uuid = { version = "1.4", features = ["v4"] }
 rusqlite = { version = "0.29.0", features = ["bundled"] }
-iroh = { path = "../../iroh/iroh" }
-iroh-bytes = { path = "../../iroh/iroh-bytes" }
-iroh-net = { path = "../../iroh/iroh-net" }
-iroh-sync = { path = "../../iroh/iroh-sync" }
-iroh-gossip = { path = "../../iroh/iroh-gossip" }
+iroh = { git = "https://github.com/n0-computer/iroh",  branch = "ramfox/todo"}
+iroh-bytes = { git = "https://github.com/n0-computer/iroh", branch = "ramfox/todo" }
+iroh-net = { git = "https://github.com/n0-computer/iroh", branch = "ramfox/todo" }
+iroh-sync = { git = "https://github.com/n0-computer/iroh", branch = "ramfox/todo" }
+iroh-gossip = { git = "https://github.com/n0-computer/iroh", branch = "ramfox/todo" }
 quic-rpc = { version = "0.6", default-features = false, features = ["flume-transport"] }
 once_cell = "1.18"
 futures = "0.3.25"
