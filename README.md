@@ -1,5 +1,16 @@
 # iroh-tauri-todomvc
 
+This TODO app was created as an example for how to use Iroh to add sync and
+networking capabilities to your app.
+
+If you have any specific capabilities you would like to see demonstrated in
+this app, please add an issue, with the "feature request" tag.
+
+## tauri-todomvc
+
+The original tauri & todomvc code can be found at
+[tauri-todomvc](https://github.com/enpitsuLin/tauri-todomvc/tree/master).
+
 ## Development
 
 Requirement:
