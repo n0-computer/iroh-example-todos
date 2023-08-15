@@ -21,7 +21,7 @@ function App() {
 
   function createList() {
     console.log("create list");
-    invoke('new_list').then(() => {
+    invoke('new_list', { name: "name" }).then(() => {
       console.log("in new_list and then");
        getTodos(); 
        setShowOpenList(false);

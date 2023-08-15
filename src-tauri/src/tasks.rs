@@ -1,29 +1,17 @@
-use std::sync::Arc;
 use std::{collections::HashMap, fmt, str::FromStr};
 
-use futures::{Stream, StreamExt};
 use anyhow::{bail, Result};
 use bytes::Bytes;
-use iroh::net::{
-    defaults::default_derp_map, magic_endpoint::get_alpn, tls::Keypair, MagicEndpoint,
-};
-use iroh::sync::{
-    LiveEvent, PeerSource,
-};
-use iroh_gossip::{
-    net::{GOSSIP_ALPN},
-    proto::TopicId,
-};
-use iroh_sync::{
-    store::{self, Store as _},
-    sync::{Author, AuthorId, Namespace, OnInsertCallback, SignedEntry},
-};
+use futures::{Stream, StreamExt};
 use iroh::client::Doc;
+
 use iroh::rpc_protocol::{DocTicket, ProviderRequest, ProviderResponse, ShareMode};
-use once_cell::sync::OnceCell;
-use serde::{Deserialize, Serialize};
+use iroh::sync::{LiveEvent, PeerSource};
+use iroh_gossip::proto::TopicId;
+use iroh_sync::store::{GetFilter, KeyFilter};
+use iroh_sync::sync::{AuthorId, SignedEntry};
 use quic_rpc::transport::flume::FlumeConnection;
-use tokio::sync::mpsc;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 /// Task in a list of tasks
@@ -73,7 +61,6 @@ impl Task {
 const MAX_TASK_SIZE: usize = 2 * 1024;
 const MAX_LABEL_LEN: usize = 2 * 1000;
 
-
 /// List of tasks, including completed tasks that have not been archived
 pub struct Tasks {
     doc: Doc<FlumeConnection<ProviderResponse, ProviderRequest>>,
@@ -82,15 +69,85 @@ pub struct Tasks {
     author: AuthorId,
 }
 
+/// How to open the task list
+pub enum TasksType {
+    /// Create a new task list with the given name
+    New(String),
+    /// Open a new task list with the given name
+    Open(String),
+    /// Join an existing task list using the ticket
+    Join(String),
+}
+
+/// Get a list of task list names from the iroh client
+pub async fn get_task_lists_names(iroh: &iroh::client::mem::Iroh) -> anyhow::Result<Vec<String>> {
+    Ok(get_task_lists_docs(iroh)
+        .await?
+        .into_iter()
+        .map(|docs| docs.0)
+        .collect())
+}
+
+/// Get a list of task list names & their associated docs from the iroh client
+pub async fn get_task_lists_docs(
+    iroh: &iroh::client::mem::Iroh,
+) -> anyhow::Result<
+    Vec<(
+        String,
+        Doc<FlumeConnection<ProviderResponse, ProviderRequest>>,
+    )>,
+> {
+    let mut doc_ids = iroh.list_docs().await?;
+    let mut docs = Vec::new();
+    while let Some(id) = doc_ids.next().await {
+        let id = id?;
+        let doc = iroh.get_doc(id)?;
+        let mut entries = doc
+            .get(GetFilter {
+                author: None,
+                key: KeyFilter::Key(crate::tasks::TASK_LIST_NAME.to_vec()),
+                latest: true,
+            })
+            .await?;
+        let entry = entries.next().await.unwrap_or_else(|| {
+            Err(anyhow::anyhow!(
+                "fatal error: task list does not have a name"
+            ))
+        })?;
+        let name = doc.get_content_bytes(&entry).await?;
+        docs.push((String::from_utf8(name.to_vec())?, doc));
+    }
+    Ok(docs)
+}
+
+const TASK_LIST_NAME: &[u8] = b"metadata/task_list_name";
+const TASK_PREFIX: &[u8] = b"task/";
+
 impl Tasks {
-    pub async fn new(ticket: Option<String>, iroh: iroh::client::mem::Iroh) -> anyhow::Result<Self> {
+    pub async fn new(typ: TasksType, iroh: iroh::client::mem::Iroh) -> anyhow::Result<Self> {
         let author = iroh.create_author().await?;
 
-        let doc = match ticket {
-            None => {
-                iroh.create_doc().await?
+        let doc = match typ {
+            TasksType::New(name) => {
+                let docs = get_task_lists_names(&iroh).await?;
+                if let Some(_) = docs.into_iter().find(|n| n == &name) {
+                    bail!("task list with name {name} already exists");
+                }
+                let doc = iroh.create_doc().await?;
+                doc.set_bytes(author, TASK_LIST_NAME.to_vec(), name.as_bytes().to_vec())
+                    .await?;
+                doc
             }
-            Some(ticket) => {
+            TasksType::Open(name) => {
+                let docs = get_task_lists_docs(&iroh).await?;
+                match docs.into_iter().find(|d| d.0 == name) {
+                    Some((_, doc)) => doc,
+                    None => {
+                        bail!("could not find task list {name}");
+                    }
+                }
+            }
+            TasksType::Join(ticket) => {
                 let ticket = DocTicket::from_str(&ticket)?;
                 iroh.import_doc(ticket).await?
             }
@@ -129,7 +186,7 @@ impl Tasks {
             is_delete: false,
             id: id.clone(),
         };
-        self.insert_bytes(id.as_bytes(), task.as_vec()?).await
+        self.insert_task_bytes(id.as_bytes(), task.as_vec()?).await
     }
     pub async fn toggle_done(&mut self, id: String) -> anyhow::Result<()> {
         let mut task = self.get_task(id.clone()).await?;
@@ -147,13 +204,20 @@ impl Tasks {
         if label.len() >= MAX_LABEL_LEN {
             bail!("label is too long, must be {MAX_LABEL_LEN} or shorter");
         }
-       let mut task =  self.get_task(id.clone()).await?;
-       task.label = label;
-       self.update_task(id.as_bytes(), task).await
+        let mut task = self.get_task(id.clone()).await?;
+        task.label = label;
+        self.update_task(id.as_bytes(), task).await
     }
 
     pub async fn get_tasks(&self) -> anyhow::Result<Vec<Task>> {
-        let mut entries = self.doc.get_all_keys_latest().await?;
+        let mut entries = self
+            .doc
+            .get(GetFilter {
+                latest: true,
+                author: None,
+                key: KeyFilter::Prefix(TASK_PREFIX.to_vec()),
+            })
+            .await?;
         let mut hash_entries: HashMap<Vec<u8>, SignedEntry> = HashMap::new();
 
         // only get most recent entry for the key
@@ -183,20 +247,31 @@ impl Tasks {
         Ok(tasks)
     }
 
-    async fn insert_bytes(&self, key: impl AsRef<[u8]>, content: Vec<u8>) -> anyhow::Result<()> {
+    async fn insert_task_bytes(
+        &self,
+        key: impl AsRef<[u8]>,
+        content: Vec<u8>,
+    ) -> anyhow::Result<()> {
         self.doc
-            .set_bytes(self.author, key.as_ref().to_vec(), content)
+            .set_bytes(
+                self.author,
+                [TASK_PREFIX, key.as_ref()].concat().to_vec(),
+                content,
+            )
             .await?;
         Ok(())
     }
 
     async fn update_task(&mut self, key: impl AsRef<[u8]>, task: Task) -> anyhow::Result<()> {
         let content = task.as_vec()?;
-        self.insert_bytes(key, content).await
+        self.insert_task_bytes(key, content).await
     }
 
     async fn get_task(&self, id: String) -> anyhow::Result<Task> {
-        let entry = self.doc.get_latest_by_key(id.as_bytes().to_vec()).await?;
+        let entry = self
+            .doc
+            .get_latest_by_key([TASK_PREFIX, id.as_bytes()].concat().to_vec())
+            .await?;
         self.task_from_entry(&entry).await
     }
 
@@ -204,7 +279,7 @@ impl Tasks {
         let id = String::from_utf8(entry.entry().id().key().to_owned())?;
         match self.doc.get_content_bytes(entry).await {
             Ok(b) => Task::from_bytes(b),
-            Err(_) => Ok(Task::missing_task(id.clone())),
+            Err(_) => Ok(Task::missing_task(id[TASK_PREFIX.len()..].to_string())),
         }
     }
 }
