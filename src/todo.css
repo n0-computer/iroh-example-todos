@@ -1,0 +1,52 @@
+.textInput {
+    background: #f5f5f5;
+    box-shadow: 0 2px 4px 0 rgba(0, 0, 0, 0.2), 0 25px 50px 0 rgba(0, 0, 0, 0.1);
+    border: 1px solid #e6e6e6;
+    flex-grow: 1;
+    padding-left: 10px;
+    margin-right: 10px;
+    font-size: 14px;
+}
+
+.instructions {
+    font-weight: 400;
+    padding: 0;
+    margin: 0;
+}
+
+.listOptions {
+    margin: 20px;
+    display: flex;
+    justify-content: space-between;
+}
+
+.link {
+    width: 110px;
+    color: #b83f45;
+    cursor: pointer;
+}
+
+.link:hover {
+    color: black;
+}
+
+.link:active {
+    color: #b83f45
+}
+
+#ticket {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    margin: 10px 12px;
+}
+
+h2 {
+    position: absolute;
+    width: 100%;
+    text-align: center;
+    color: #b83f45;
+    font-size: 1.5em;
+    font-weight: 300;
+    top: -45px;
+}

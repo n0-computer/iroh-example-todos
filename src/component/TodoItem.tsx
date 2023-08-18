@@ -17,7 +17,7 @@ const TodoItem: React.FC<{ todo: Todo }> = ({ todo }) => {
   }, 500)
 
   const setLabel = useDebouncedCallback((label: string) => {
-    invoke('update_todo', {
+    invoke('delete', {
       todo: { ...todo, label }
     })
   }, 500)

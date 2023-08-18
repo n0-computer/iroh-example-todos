@@ -166,6 +166,7 @@ dependencies = [
  "blake3",
  "bytes",
  "data-encoding",
+ "dirs-next",
  "futures",
  "iroh",
  "iroh-bytes",

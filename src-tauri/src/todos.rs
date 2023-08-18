@@ -13,31 +13,41 @@ use iroh_sync::sync::{AuthorId, SignedEntry};
 use quic_rpc::transport::flume::FlumeConnection;
 use serde::{Deserialize, Serialize};
 
+/// entry key for the todo list's human readable name
+const TODO_LIST_NAME: &[u8] = b"metadata/todo_list_name";
+/// entry prefix for each todo
+const TODO_PREFIX: &[u8] = b"todo/";
+
+/// Max estimated size of a Todo
+const MAX_TODO_SIZE: usize = 2 * 1024;
+/// Max length of a todo label / description
+const MAX_LABEL_LEN: usize = 2 * 1000;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
-/// Task in a list of tasks
-pub struct Task {
-    /// Description of the task
+/// Single todo in a list of todos
+pub struct Todo {
+    /// Description of the todo
     /// Limited to 2000 characters
     pub label: String,
     /// Record creation timestamp. Counted as micros since the Unix epoch.
     pub created: u64,
-    /// Whether or not the task has been completed. Done tasks will show up in the task list until
+    /// Whether or not the todo has been completed. Done todos will show up in the todo list until
     /// they are archived.
     pub done: bool,
-    /// Indicates whether or not the task is tombstoned
+    /// Indicates whether or not the todo is tombstoned
     pub is_delete: bool,
     /// String id
     pub id: String,
 }
 
-impl Task {
+impl Todo {
     fn from_bytes(bytes: Bytes) -> anyhow::Result<Self> {
-        let task = postcard::from_bytes(&bytes)?;
-        Ok(task)
+        let todo = postcard::from_bytes(&bytes)?;
+        Ok(todo)
     }
 
     fn as_bytes(self) -> anyhow::Result<Bytes> {
-        let mut buf = bytes::BytesMut::zeroed(MAX_TASK_SIZE);
+        let mut buf = bytes::BytesMut::zeroed(MAX_TODO_SIZE);
         postcard::to_slice(&self, &mut buf)?;
         Ok(buf.freeze())
     }
@@ -47,7 +57,7 @@ impl Task {
         Ok(buf[..].to_vec())
     }
 
-    fn missing_task(id: String) -> Self {
+    fn missing_todo(id: String) -> Self {
         Self {
             label: String::from("Missing Content"),
             created: 0,
@@ -58,38 +68,35 @@ impl Task {
     }
 }
 
-const MAX_TASK_SIZE: usize = 2 * 1024;
-const MAX_LABEL_LEN: usize = 2 * 1000;
-
-/// List of tasks, including completed tasks that have not been archived
-pub struct Tasks {
+/// List of todos, including completed todos that have not been archived
+pub struct Todos {
     doc: Doc<FlumeConnection<ProviderResponse, ProviderRequest>>,
-    iroh: iroh::client::mem::Iroh,
     ticket: DocTicket,
     author: AuthorId,
+    name: Option<String>,
 }
 
-/// How to open the task list
-pub enum TasksType {
-    /// Create a new task list with the given name
+/// How to open the todo list
+pub enum TodosType {
+    /// Create a new todo list with the given name
     New(String),
-    /// Open a new task list with the given name
+    /// Open a new todo list with the given name
     Open(String),
-    /// Join an existing task list using the ticket
+    /// Join an existing todo list using the ticket
     Join(String),
 }
 
-/// Get a list of task list names from the iroh client
-pub async fn get_task_lists_names(iroh: &iroh::client::mem::Iroh) -> anyhow::Result<Vec<String>> {
-    Ok(get_task_lists_docs(iroh)
+/// Get a list of todo list names from the iroh client
+pub async fn get_todo_lists_names(iroh: &iroh::client::mem::Iroh) -> anyhow::Result<Vec<String>> {
+    Ok(get_todo_lists_docs(iroh)
         .await?
         .into_iter()
         .map(|docs| docs.0)
         .collect())
 }
 
-/// Get a list of task list names & their associated docs from the iroh client
-pub async fn get_task_lists_docs(
+/// Get a list of todo list names & their associated docs from the iroh client
+pub async fn get_todo_lists_docs(
     iroh: &iroh::client::mem::Iroh,
 ) -> anyhow::Result<
     Vec<(
@@ -102,65 +109,76 @@ pub async fn get_task_lists_docs(
     while let Some(id) = doc_ids.next().await {
         let id = id?;
         let doc = iroh.get_doc(id)?;
-        let mut entries = doc
-            .get(GetFilter {
-                author: None,
-                key: KeyFilter::Key(crate::tasks::TASK_LIST_NAME.to_vec()),
-                latest: true,
-            })
-            .await?;
-        let entry = entries.next().await.unwrap_or_else(|| {
-            Err(anyhow::anyhow!(
-                "fatal error: task list does not have a name"
-            ))
-        })?;
-        let name = doc.get_content_bytes(&entry).await?;
-        docs.push((String::from_utf8(name.to_vec())?, doc));
+        docs.push((get_list_name_from_doc(&doc).await?, doc));
     }
     Ok(docs)
 }
 
-const TASK_LIST_NAME: &[u8] = b"metadata/task_list_name";
-const TASK_PREFIX: &[u8] = b"task/";
+async fn get_list_name_from_doc(
+    doc: &Doc<FlumeConnection<ProviderResponse, ProviderRequest>>,
+) -> Result<String> {
+    let mut entries = doc
+        .get(GetFilter {
+            author: None,
+            key: KeyFilter::Key(TODO_LIST_NAME.to_vec()),
+            latest: true,
+        })
+        .await?;
+    let entry = entries.next().await.unwrap_or_else(|| {
+        Err(anyhow::anyhow!(
+            "fatal error: todo list does not have a name"
+        ))
+    })?;
+    let name = doc.get_content_bytes(&entry).await?;
+    let name = String::from_utf8(name.to_vec())?;
+    Ok(name)
+}
 
-impl Tasks {
-    pub async fn new(typ: TasksType, iroh: iroh::client::mem::Iroh) -> anyhow::Result<Self> {
+impl Todos {
+    pub async fn new(typ: TodosType, iroh: iroh::client::mem::Iroh) -> anyhow::Result<Self> {
         let author = iroh.create_author().await?;
 
         let doc = match typ {
-            TasksType::New(name) => {
-                let docs = get_task_lists_names(&iroh).await?;
+            TodosType::New(name) => {
+                let docs = get_todo_lists_names(&iroh).await?;
                 if let Some(_) = docs.into_iter().find(|n| n == &name) {
-                    bail!("task list with name {name} already exists");
+                    bail!("todo list with name {name} already exists");
                 }
                 let doc = iroh.create_doc().await?;
-                doc.set_bytes(author, TASK_LIST_NAME.to_vec(), name.as_bytes().to_vec())
+                doc.set_bytes(author, TODO_LIST_NAME.to_vec(), name.as_bytes().to_vec())
                     .await?;
                 doc
             }
-            TasksType::Open(name) => {
-                let docs = get_task_lists_docs(&iroh).await?;
+            TodosType::Open(name) => {
+                let docs = get_todo_lists_docs(&iroh).await?;
                 match docs.into_iter().find(|d| d.0 == name) {
                     Some((_, doc)) => doc,
                     None => {
-                        bail!("could not find task list {name}");
+                        bail!("could not find todo list {name}");
                     }
                 }
             }
-            TasksType::Join(ticket) => {
+            TodosType::Join(ticket) => {
                 let ticket = DocTicket::from_str(&ticket)?;
                 iroh.import_doc(ticket).await?
             }
         };
 
         let ticket = doc.share(ShareMode::Write).await?;
-
-        Ok(Tasks {
+        let name = get_list_name_from_doc(&doc).await?;
+        Ok(Todos {
             author,
             doc,
             ticket,
-            iroh,
+            name: Some(name),
         })
+    }
+
+    pub async fn name(&mut self) -> Option<String> {
+        match &self.name {
+            Some(name) => Some(name.clone()),
+            None => get_list_name_from_doc(&self.doc).await.ok(),
+        }
     }
 
     pub fn ticket(&self) -> String {
@@ -179,43 +197,44 @@ impl Tasks {
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .expect("time drift")
             .as_secs();
-        let task = Task {
+        let todo = Todo {
             label,
             created,
             done: false,
             is_delete: false,
             id: id.clone(),
         };
-        self.insert_task_bytes(id.as_bytes(), task.as_vec()?).await
+        self.insert_todo_bytes(id.as_bytes(), todo.as_vec()?).await
     }
+
     pub async fn toggle_done(&mut self, id: String) -> anyhow::Result<()> {
-        let mut task = self.get_task(id.clone()).await?;
-        task.done = !task.done;
-        self.update_task(id.as_bytes(), task).await
+        let mut todo = self.get_todo(id.clone()).await?;
+        todo.done = !todo.done;
+        self.update_todo(id.as_bytes(), todo).await
     }
 
     pub async fn delete(&mut self, id: String) -> anyhow::Result<()> {
-        let mut task = self.get_task(id.clone()).await?;
-        task.is_delete = true;
-        self.update_task(id.as_bytes(), task).await
+        let mut todo = self.get_todo(id.clone()).await?;
+        todo.is_delete = true;
+        self.update_todo(id.as_bytes(), todo).await
     }
 
     pub async fn update(&mut self, id: String, label: String) -> anyhow::Result<()> {
         if label.len() >= MAX_LABEL_LEN {
             bail!("label is too long, must be {MAX_LABEL_LEN} or shorter");
         }
-        let mut task = self.get_task(id.clone()).await?;
-        task.label = label;
-        self.update_task(id.as_bytes(), task).await
+        let mut todo = self.get_todo(id.clone()).await?;
+        todo.label = label;
+        self.update_todo(id.as_bytes(), todo).await
     }
 
-    pub async fn get_tasks(&self) -> anyhow::Result<Vec<Task>> {
+    pub async fn get_todos(&self) -> anyhow::Result<Vec<Todo>> {
         let mut entries = self
             .doc
             .get(GetFilter {
                 latest: true,
                 author: None,
-                key: KeyFilter::Prefix(TASK_PREFIX.to_vec()),
+                key: KeyFilter::Prefix(TODO_PREFIX.to_vec()),
             })
             .await?;
         let mut hash_entries: HashMap<Vec<u8>, SignedEntry> = HashMap::new();
@@ -236,18 +255,18 @@ impl Tasks {
             }
         }
         let entries: Vec<_> = hash_entries.values().collect();
-        let mut tasks = Vec::new();
+        let mut todos = Vec::new();
         for entry in entries {
-            let task = self.task_from_entry(entry).await?;
-            if !task.is_delete {
-                tasks.push(task);
+            let todo = self.todo_from_entry(entry).await?;
+            if !todo.is_delete {
+                todos.push(todo);
             }
         }
-        tasks.sort_by_key(|t| t.created);
-        Ok(tasks)
+        todos.sort_by_key(|t| t.created);
+        Ok(todos)
     }
 
-    async fn insert_task_bytes(
+    async fn insert_todo_bytes(
         &self,
         key: impl AsRef<[u8]>,
         content: Vec<u8>,
@@ -255,40 +274,33 @@ impl Tasks {
         self.doc
             .set_bytes(
                 self.author,
-                [TASK_PREFIX, key.as_ref()].concat().to_vec(),
+                [TODO_PREFIX, key.as_ref()].concat().to_vec(),
                 content,
             )
             .await?;
         Ok(())
     }
 
-    async fn update_task(&mut self, key: impl AsRef<[u8]>, task: Task) -> anyhow::Result<()> {
-        let content = task.as_vec()?;
-        self.insert_task_bytes(key, content).await
+    async fn update_todo(&mut self, key: impl AsRef<[u8]>, todo: Todo) -> anyhow::Result<()> {
+        let content = todo.as_vec()?;
+        self.insert_todo_bytes(key, content).await
     }
 
-    async fn get_task(&self, id: String) -> anyhow::Result<Task> {
+    async fn get_todo(&self, id: String) -> anyhow::Result<Todo> {
         let entry = self
             .doc
-            .get_latest_by_key([TASK_PREFIX, id.as_bytes()].concat().to_vec())
+            .get_latest_by_key([TODO_PREFIX, id.as_bytes()].concat().to_vec())
             .await?;
-        self.task_from_entry(&entry).await
+        self.todo_from_entry(&entry).await
     }
 
-    async fn task_from_entry(&self, entry: &SignedEntry) -> anyhow::Result<Task> {
+    async fn todo_from_entry(&self, entry: &SignedEntry) -> anyhow::Result<Todo> {
         let id = String::from_utf8(entry.entry().id().key().to_owned())?;
         match self.doc.get_content_bytes(entry).await {
-            Ok(b) => Task::from_bytes(b),
-            Err(_) => Ok(Task::missing_task(id[TASK_PREFIX.len()..].to_string())),
+            Ok(b) => Todo::from_bytes(b),
+            Err(_) => Ok(Todo::missing_todo(id[TODO_PREFIX.len()..].to_string())),
         }
     }
-}
-
-/// TODO: make actual error
-#[derive(Debug)]
-pub enum UpdateError {
-    NoMoreUpdates,
-    GetTasksError,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
