@@ -272,8 +272,10 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
     let events_handle = tokio::spawn(async move {
         while let Some(Ok(event)) = events.next().await {
             match event {
-                iroh::sync::LiveEvent::InsertRemote => {
-                    return;
+                iroh::sync::LiveEvent::InsertRemote { content_status, .. } => {
+                    if let iroh::sync::ContentStatus::Pending {} = content_status {
+                        return;
+                    }
                 }
                 _ => {}
             }
