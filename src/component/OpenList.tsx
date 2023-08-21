@@ -1,41 +1,76 @@
-import { useAtom } from 'jotai'
-import { v4 as randomUUID } from 'uuid'
-import { useState, useCallback, KeyboardEventHandler } from 'react'
-import { activeTodoCountAtom, allTodosAtom, anyTodosDone, filterType } from '../store/todos'
-import { Todo } from '../types/todo'
-import TodoItem from './TodoItem'
-import { invoke } from '@tauri-apps/api'
+import { useState } from 'react'
+import Select, { } from 'react-select'
 
-const OpenList: React.FC<{ createList: () => void, joinList: (ticket: string) => void }> = ({ createList, joinList}) => {
+const OpenList: React.FC<{ createList: (name: string) => void, joinList: (ticket: string) => void, openList: (name: string) => void, todoLists: string[]}> = ({ createList, joinList, openList, todoLists}) => {
+    const [chosenList, setChosenList] = useState({ value: '', label: ''});
+    const [name, setName] = useState('');
     const [ticket, setTicket] = useState('');
+
+    const onOpenList = () => {
+      if (chosenList.value.length > 0) {
+        openList(chosenList.value);
+      }
+    }
+
   return (
     <>
       <header className="header">
         <h1>todos</h1>
       </header>
       <footer className="footer" style={{ height:"auto"}}>
-          <p style={{ fontWeight:400, padding:0, margin:0 }}>Open a new todo list or input a ticket to join an active one:</p>
-          <div style={{margin:20, display: "flex", justifyContent:"center"}}>
-            <div style={{width: 100}}>
-                <a onClick={createList} style={{ color: "#b83f45", cursor: "pointer" }}>Create New List ⇨</a>
-            </div>
+          <p className="instructions">Open a new todo list or input a ticket to join an active one:</p>
+          <div className="listOptions">
+            <input 
+                className="textInput"
+                value={name}
+                onChange={(e) => { setName(e.target.value) }}
+                type="text" 
+                placeholder='new todo list name'
+            />
+            <a className="link" onClick={() => createList(name)}>Create New List ⇨</a>
           </div>
-          <div style={{margin:20, display: "flex", justifyContent:"space-between"}}>
-            <input style={
-                { 
-                    background: "#f5f5f5",
-                    boxShadow: "0 2px 4px 0 rgba(0, 0, 0, 0.2), 0 25px 50px 0 rgba(0, 0, 0, 0.1)",
-                    border: "1px solid #e6e6e6",
+          { todoLists.length > 0 && 
+          <div className="listOptions">
+            <Select
+              styles={{
+                container: (baseStyles) => (
+                  {
+                    ...baseStyles,
                     flexGrow: 1,
-                    paddingLeft: 10,
                     marginRight: 10,
-                }} 
+                    fontSize: 14,
+                    textAlign: 'left',
+                  }),
+                  control: (baseStyles) => ({
+                    ...baseStyles,
+                    background: "#f5f5f5",    
+                  }),
+                  input: (baseStyles) => ({
+                    ...baseStyles,
+                    paddingLeft: 10,    
+                  }),
+
+              }}
+              defaultValue={chosenList}
+              onChange={(val) => {
+                let obj = val === null ?
+                  { value: '', label: ''} :
+                  { value: val.value, label: val.label};
+                setChosenList(obj)
+              }}
+              options={todoLists.map((list) => ({ value: list, label: list }))}
+            />
+            <a className="link" onClick={onOpenList}>Open List ⇨</a>
+          </div>}
+          <div className="listOptions">
+            <input 
+                className="textInput"
                 value={ticket}
                 onChange={(e) => { setTicket(e.target.value) }}
                 type="text" 
                 placeholder='input a ticket to join a list'
             />
-            <a onClick={() => joinList(ticket)}style={{width: 110, cursor: "pointer", color:"#b83f45"}}>Join Using Ticket ⇨</a>
+            <a className="link" onClick={() => joinList(ticket)}>Join Using Ticket ⇨</a>
           </div>
       </footer>
     </>

@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 const DOCS_PATH: &str = "docs";
+const TASKS_DIR: &str = "tasks";
 
 pub enum Iroh {
     FileStore(Node<BaoFileStore, DocFileStore>),
@@ -22,14 +23,13 @@ impl Iroh {
         keypair: Keypair,
         derp_map: Option<DerpMap>,
         bind_addr: SocketAddr,
-        data_root: Option<PathBuf>,
     ) -> Result<Self> {
         let rt = runtime::Handle::from_currrent(num_cpus::get())?;
-        match data_root {
-            Some(path) => Ok(Iroh::FileStore(
-                create_iroh_node_file_store(&rt, keypair, derp_map, bind_addr, path).await?,
+        match std::env::var_os("TASKS_MEM_STORE") {
+            None => Ok(Iroh::FileStore(
+                create_iroh_node_file_store(&rt, keypair, derp_map, bind_addr).await?,
             )),
-            None => Ok(Iroh::MemStore(
+            Some(_) => Ok(Iroh::MemStore(
                 create_iroh_node_mem_store(rt, keypair, derp_map, bind_addr).await?,
             )),
         }
@@ -73,15 +73,9 @@ pub async fn create_iroh_node_file_store(
     keypair: Keypair,
     derp_map: Option<DerpMap>,
     bind_addr: SocketAddr,
-    data_root: PathBuf,
 ) -> Result<Node<BaoFileStore, DocFileStore>> {
-    let path = {
-        if data_root.is_absolute() {
-            data_root
-        } else {
-            std::env::current_dir()?.join(data_root)
-        }
-    };
+    let path = tasks_iroh_config_root()?;
+    println!("loading iroh tasks store from {path:?}");
     let bao_store = {
         tokio::fs::create_dir_all(&path).await?;
         BaoFileStore::load(&path, &path, &rt)
@@ -90,9 +84,8 @@ pub async fn create_iroh_node_file_store(
     };
     let doc_store = {
         let path = path.join(DOCS_PATH);
-        DocFileStore::new(path.clone()).with_context(|| {
-            format!("Failed to load docs database from {:?}", path.display())
-        })?
+        DocFileStore::new(path.clone())
+            .with_context(|| format!("Failed to load docs database from {:?}", path.display()))?
     };
 
     create_iroh_node(bao_store, doc_store, rt, keypair, derp_map, bind_addr).await
@@ -116,4 +109,14 @@ pub async fn create_iroh_node<B: BaoStore, D: DocStore>(
         .keypair(keypair)
         .spawn()
         .await
+}
+
+fn tasks_iroh_config_root() -> anyhow::Result<PathBuf> {
+    if let Some(val) = std::env::var_os("TASK_CONFIG_DIR") {
+        return Ok(PathBuf::from(val));
+    }
+    let cfg = dirs_next::config_dir().ok_or_else(|| {
+        anyhow::anyhow!("operating environment provides no directory for configuration")
+    })?;
+    Ok(cfg.join(TASKS_DIR))
 }

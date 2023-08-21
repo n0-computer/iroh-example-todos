@@ -6,7 +6,7 @@ import { Todo } from '../types/todo'
 import TodoItem from './TodoItem'
 import { invoke } from '@tauri-apps/api'
 
-const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
+const TodoList: React.FC<{ todos: Todo[], name: string }> = ({ todos, name }) => {
   const [ticket, setTicket] = useState('');
   const [, setTodos] = useAtom(allTodosAtom)
   const [type, setType] = useAtom(filterType)
@@ -17,8 +17,6 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
 
   useEffect(() => {
     invoke<string>('get_ticket').then((res) => {
-        console.log("get ticket");
-        console.log(res);
         setTicket(res)
     })
   }, [])
@@ -49,8 +47,8 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
       return oldTodos.filter((todo) => {
         const isDone = todo.done
         if (isDone) {
-          invoke('update_todo', {
-            todo: { ...todo, is_delete: true }
+          invoke('delete', {
+            id: todo.id
           })
           return false
         }
@@ -59,19 +57,14 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
     })
   }
   return (
-    <>
+    <> 
+      <a 
+        id="ticket"
+        className="link"
+        onClick={() => navigator.clipboard.writeText(ticket)}>Copy Ticket</a>
       <header className="header">
         <h1>todos</h1>
-        <a style={
-          {
-            position: "absolute",
-            width: "100%",
-            textAlign: "center",
-            color: "#b83f45",
-            top: -30,
-            cursor: "pointer",
-          }
-        } onClick={() => navigator.clipboard.writeText(ticket)}>Copy Ticket</a>
+        <h2>{name}</h2>
         <input
           type="text"
           className="new-todo"

@@ -2,38 +2,30 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
-mod tasks;
-mod todo;
 mod iroh_node;
+mod todos;
 
 use anyhow::Result;
-use std::sync::Mutex;
+use futures::StreamExt;
+use iroh_net::defaults::default_derp_map;
+use iroh_net::tls::Keypair;
 use std::net::SocketAddr;
 use tauri::Manager;
 use tokio::sync::{mpsc, oneshot};
-use futures::{Stream, StreamExt};
-use iroh_net::defaults::default_derp_map;
-use iroh_net::tls::Keypair;
 
-use self::tasks::{Task, Tasks};
-use self::todo::{Todo, TodoApp};
+use self::todos::{get_todo_lists_names, Todo, Todos};
 
-struct AppState {
-    app: Mutex<TodoApp>,
-}
+struct AppState {}
 
 fn main() {
-    let app = TodoApp::new().unwrap();
     tauri::Builder::default()
-        .manage(AppState {
-            app: Mutex::from(app),
-        })
+        .manage(AppState {})
         .setup(|app| {
             let handle = app.handle();
             #[cfg(debug_assertions)] // only include this code on debug builds
             {
-              let window = app.get_window("main").unwrap();
-              window.open_devtools();
+                let window = app.get_window("main").unwrap();
+                window.open_devtools();
             }
             tauri::async_runtime::spawn(async move {
                 println!("starting backend...");
@@ -45,7 +37,10 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            get_todo_lists,
+            get_list_name,
             new_list,
+            open_list,
             get_ticket,
             get_todos,
             new_todo,
@@ -60,44 +55,97 @@ fn main() {
 
 #[derive(Debug)]
 enum Cmd {
+    /*
+     * Commands for viewing or manipulating a todo list
+     */
     /// Create a new todo
     Add { id: String, label: String },
     /// Change description of the todo
-    Update {id: String, label: String},
+    Update { id: String, label: String },
     /// Toggle whether or not the todo is done
     ToggleDone { id: String },
     /// Remove a todo
     Delete { id: String },
-    /// List all the todos
+    /// List all the todos in the todo
     Ls,
     /// Get the ticket for the current list
     GetTicket,
+    /// Get the name of this list
+    GetListName,
+    /*
+     * Commands on opening, creating, joining, or listing todo lists
+     */
+    /// Get a list of all the todo lists by name
+    TodoLists,
+    /// Create a new todo list
+    NewList { name: String },
+    /// Open an existing todo list
+    OpenList { name: String },
     /// Join a todo list
     SetTicket { ticket: String },
-    /// Create a new todo list
-    NewList,
 }
 
 #[derive(Debug)]
 enum CmdAnswer {
     Ok,
     UnexpectedCmd,
-    Ls(Vec<(String, Task)>),
-    Ticket(String)
+    Ls(Vec<(String, Todo)>),
+    TodoLists(Vec<String>),
+    Ticket(String),
+    ListName(String),
+}
+
+#[tauri::command]
+async fn open_list(
+    _state: tauri::State<'_, AppState>,
+    name: String,
+    cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
+) -> Result<(), String> {
+    println!("open_list {name} called from app");
+    let (tx, rx) = oneshot::channel();
+    cmd_tx.send((Cmd::OpenList { name }, tx)).await.unwrap();
+    if let CmdAnswer::Ok = rx.await.unwrap() {
+        return Ok(());
+    }
+    unreachable!("invalid answer");
+}
+
+#[tauri::command]
+async fn get_list_name(
+    cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
+) -> Result<String, String> {
+    let (tx, rx) = oneshot::channel();
+    cmd_tx.send((Cmd::GetListName, tx)).await.unwrap();
+    if let CmdAnswer::ListName(name) = rx.await.unwrap() {
+        return Ok(name);
+    }
+    unreachable!("invalid answer");
+}
+
+#[tauri::command]
+async fn get_todo_lists(
+    cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
+) -> Result<Vec<String>, String> {
+    let (tx, rx) = oneshot::channel();
+    cmd_tx.send((Cmd::TodoLists, tx)).await.unwrap();
+    if let CmdAnswer::TodoLists(todos) = rx.await.unwrap() {
+        return Ok(todos);
+    }
+    unreachable!("invalid answer");
 }
 
 #[tauri::command]
 async fn get_todos(
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<Vec<Todo>, String> {
-    println!("get_todos called from app");
     let (tx, rx) = oneshot::channel();
     cmd_tx.send((Cmd::Ls, tx)).await.unwrap();
-    if let CmdAnswer::Ls(tasks) = rx.await.unwrap() {
-        let todos = tasks
+    if let CmdAnswer::Ls(todos) = rx.await.unwrap() {
+        let todos = todos
             .into_iter()
             .map(|(id, t)| Todo {
                 id,
+                created: t.created,
                 label: t.label,
                 done: t.done,
                 is_delete: t.is_delete,
@@ -110,88 +158,66 @@ async fn get_todos(
 
 #[tauri::command]
 async fn new_list(
+    _state: tauri::State<'_, AppState>,
+    name: String,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<(), String> {
-    println!("new_list called from app");
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::NewList, tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::NewList { name }, tx)).await.unwrap();
     rx.await.unwrap();
     Ok(())
 }
 
 #[tauri::command]
 async fn new_todo(
-    state: tauri::State<'_, AppState>,
+    _state: tauri::State<'_, AppState>,
     todo: Todo,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
-) -> Result<bool, String> {
-    println!("new_todo called from app");
+) -> Result<(), String> {
     let label = todo.label.clone();
     let id = todo.id.clone();
-    let result = {
-        let app = state.app.lock().unwrap();
-        app.new_todo(todo)
-    };
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::Add { id, label }, tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::Add { id, label }, tx)).await.unwrap();
     rx.await.unwrap();
-    Ok(result)
+    Ok(())
 }
 
 #[tauri::command]
 async fn update_todo(
-    state: tauri::State<'_, AppState>,
+    _state: tauri::State<'_, AppState>,
     todo: Todo,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<(), String> {
-    println!("update_todo called from app");
     let id = todo.id;
     let label = todo.label;
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::Update {id, label},  tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::Update { id, label }, tx)).await.unwrap();
     rx.await.unwrap();
     Ok(())
 }
 
 #[tauri::command]
 async fn toggle_done(
-    state: tauri::State<'_, AppState>,
+    _state: tauri::State<'_, AppState>,
     id: String,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
-) -> Result<bool, String> {
-    println!("toggle_done called from app");
+) -> Result<(), String> {
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::ToggleDone {id},  tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::ToggleDone { id }, tx)).await.unwrap();
     rx.await.unwrap();
-    Ok(true)
+    Ok(())
 }
 
 #[tauri::command]
 async fn delete(
-    state: tauri::State<'_, AppState>,
+    _state: tauri::State<'_, AppState>,
     id: String,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
-) -> Result<bool, String> {
-    println!("delete called from app");
+) -> Result<(), String> {
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::Delete {id},  tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::Delete { id }, tx)).await.unwrap();
     rx.await.unwrap();
-    Ok(true)
+    Ok(())
 }
 
 #[tauri::command]
@@ -199,12 +225,8 @@ async fn set_ticket(
     ticket: String,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<(), String> {
-    println!("set_ticket called from app");
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::SetTicket { ticket }, tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::SetTicket { ticket }, tx)).await.unwrap();
     rx.await.unwrap();
     Ok(())
 }
@@ -213,7 +235,6 @@ async fn set_ticket(
 async fn get_ticket(
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<String, String> {
-    println!("get_ticket called from app");
     let (tx, rx) = oneshot::channel();
     cmd_tx.send((Cmd::GetTicket, tx)).await.unwrap();
     if let CmdAnswer::Ticket(ticket) = rx.await.unwrap() {
@@ -230,67 +251,81 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
     let derp_map = default_derp_map();
     let bind_addr: SocketAddr = format!("0.0.0.0:0").parse().unwrap();
 
-    let iroh = iroh_node::Iroh::new(keypair, Some(derp_map), bind_addr, None).await?;
+    let iroh = iroh_node::Iroh::new(keypair, Some(derp_map), bind_addr).await?;
 
-    let mut tasks = None;
-    println!("waiting for task create command...");
+    let mut todos = None;
+    println!("waiting for todo create command...");
     while let Some((cmd, answer_tx)) = cmd_rx.recv().await {
         let iroh_client = iroh.client();
-        let tasks_updater = handle.clone();
-        tasks = handle_start_command(tasks_updater, cmd, answer_tx, iroh_client).await?;
-        if tasks.is_some() { 
-            println!("tasks created!");
-            break; 
+        let todos_updater = handle.clone();
+        todos = handle_start_command(todos_updater, cmd, answer_tx, iroh_client).await?;
+        if todos.is_some() {
+            println!("todos created!");
+            break;
         }
     }
 
-    let mut tasks = tasks.expect("checked above");
-    println!("tasks list created!");
+    let mut todos = todos.expect("checked above");
+    println!("todos list created!");
 
-    let mut events = tasks.doc_subscribe().await?;
+    let mut events = todos.doc_subscribe().await?;
     let events_handle = tokio::spawn(async move {
         while let Some(Ok(event)) = events.next().await {
             match event {
-                iroh::sync::LiveEvent::InsertRemote => {
-                    // TODO: need an `on_download` callback, this sleep
-                    // allows for downloading the content before trying to get it
-                    // from the store
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                iroh::sync::LiveEvent::InsertRemote { content_status, .. } => {
+                    if let iroh::sync::ContentStatus::Pending {} = content_status {
+                        return;
+                    }
                 }
                 _ => {}
             }
-           handle.emit_all("update-all", ())
+            handle
+                .emit_all("update-all", ())
                 .expect("unable to send update event");
         }
     });
 
     println!("waiting for cmds...");
     while let Some((cmd, answer_tx)) = cmd_rx.recv().await {
-        let res = handle_command(cmd, &mut tasks, answer_tx).await;
+        let res = handle_command(cmd, &mut todos, answer_tx).await;
         if let Err(err) = res {
             println!("> error: {err}");
         }
     }
 
-    println!("shutting down tasks list...");
+    println!("shutting down todos list...");
     events_handle.abort();
     iroh.shutdown();
     Ok(())
 }
 
-    async fn handle_start_command<R: tauri::Runtime>(handle: tauri::AppHandle<R>, cmd: Cmd, answer_tx: oneshot::Sender<CmdAnswer>, iroh: iroh::client::mem::Iroh) -> Result<Option<Tasks>> {
+async fn handle_start_command<R: tauri::Runtime>(
+    _handle: tauri::AppHandle<R>,
+    cmd: Cmd,
+    answer_tx: oneshot::Sender<CmdAnswer>,
+    iroh: iroh::client::mem::Iroh,
+) -> Result<Option<Todos>> {
     match cmd {
-        Cmd::NewList => {
-            println!("new list");
-            let tasks = Tasks::new(None, iroh).await?;
+        Cmd::NewList { name } => {
+            let todos = Todos::new(todos::TodosType::New(name), iroh).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
-            Ok(Some(tasks))
+            Ok(Some(todos))
         }
-        Cmd::SetTicket {ticket } => {
-            println!("set ticket: {ticket}");
-            let tasks = Tasks::new(Some(ticket), iroh).await?;
+        Cmd::OpenList { name } => {
+            let todos = Todos::new(todos::TodosType::Open(name), iroh).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
-            Ok(Some(tasks))
+            Ok(Some(todos))
+        }
+        Cmd::SetTicket { ticket } => {
+            println!("set ticket: {ticket}");
+            let todos = Todos::new(todos::TodosType::Join(ticket), iroh).await?;
+            answer_tx.send(CmdAnswer::Ok).unwrap();
+            Ok(Some(todos))
+        }
+        Cmd::TodoLists => {
+            let todo_lists = get_todo_lists_names(&iroh).await?;
+            answer_tx.send(CmdAnswer::TodoLists(todo_lists)).unwrap();
+            Ok(None)
         }
         _ => {
             answer_tx.send(CmdAnswer::UnexpectedCmd).unwrap();
@@ -299,43 +334,45 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
     }
 }
 
-fn fmt_hash(hash: impl AsRef<[u8]>) -> String {
-    let mut text = data_encoding::BASE32_NOPAD.encode(hash.as_ref());
-    text.make_ascii_lowercase();
-    format!("{}…{}", &text[..5], &text[(text.len() - 2)..])
-}
-
 async fn handle_command(
     cmd: Cmd,
-    task: &mut Tasks,
+    todo: &mut Todos,
     answer_tx: oneshot::Sender<CmdAnswer>,
 ) -> Result<()> {
     match cmd {
         Cmd::Add { id, label } => {
             println!("adding todo: {label}");
-            task.add(id, label).await?;
+            todo.add(id, label).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
         }
         Cmd::ToggleDone { id } => {
-            task.toggle_done(id).await?;
+            todo.toggle_done(id).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
         }
         Cmd::Delete { id } => {
-            task.delete(id).await?;
+            todo.delete(id).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
         }
         Cmd::Ls => {
-            let tasks = task.get_tasks().await?;
-            let tasks = tasks.into_iter().map(|t| (t.id.clone(), t)).collect();
-            answer_tx.send(CmdAnswer::Ls(tasks)).unwrap();
+            let todos = todo.get_todos().await?;
+            let todos = todos.into_iter().map(|t| (t.id.clone(), t)).collect();
+            answer_tx.send(CmdAnswer::Ls(todos)).unwrap();
         }
         Cmd::GetTicket => {
             println!("getting ticket");
-            answer_tx.send(CmdAnswer::Ticket(task.ticket())).unwrap();
+            answer_tx.send(CmdAnswer::Ticket(todo.ticket())).unwrap();
         }
         Cmd::Update { id, label } => {
-            task.update(id, label).await?;
+            todo.update(id, label).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
+        }
+        Cmd::GetListName => {
+            println!("getting ticket");
+            answer_tx
+                .send(CmdAnswer::ListName(
+                    todo.name().await.unwrap_or_else(|| String::new()),
+                ))
+                .unwrap();
         }
         cmd => {
             answer_tx.send(CmdAnswer::UnexpectedCmd).unwrap();
