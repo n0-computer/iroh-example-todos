@@ -1,29 +1,14 @@
-use std::sync::Arc;
-use std::{collections::HashMap, fmt, str::FromStr};
+use std::{collections::HashMap, str::FromStr};
 
-use futures::{Stream, StreamExt};
 use anyhow::{bail, Result};
 use bytes::Bytes;
-use iroh::net::{
-    defaults::default_derp_map, magic_endpoint::get_alpn, tls::Keypair, MagicEndpoint,
-};
-use iroh::sync::{
-    LiveEvent, PeerSource,
-};
-use iroh_gossip::{
-    net::{GOSSIP_ALPN},
-    proto::TopicId,
-};
-use iroh_sync::{
-    store::{self, Store as _},
-    sync::{Author, AuthorId, Namespace, OnInsertCallback, SignedEntry},
-};
-use iroh::client::Doc;
+use futures::{Stream, StreamExt};
+use iroh::client::{Doc, Iroh};
 use iroh::rpc_protocol::{DocTicket, ProviderRequest, ProviderResponse, ShareMode};
-use once_cell::sync::OnceCell;
-use serde::{Deserialize, Serialize};
+use iroh::sync::{AuthorId, Entry};
+use iroh::sync_engine::LiveEvent;
 use quic_rpc::transport::flume::FlumeConnection;
-use tokio::sync::mpsc;
+use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 /// Task in a list of tasks
@@ -73,36 +58,36 @@ impl Task {
 const MAX_TASK_SIZE: usize = 2 * 1024;
 const MAX_LABEL_LEN: usize = 2 * 1000;
 
-
 /// List of tasks, including completed tasks that have not been archived
 pub struct Tasks {
+    node: Iroh<FlumeConnection<ProviderResponse, ProviderRequest>>,
     doc: Doc<FlumeConnection<ProviderResponse, ProviderRequest>>,
-    iroh: iroh::client::mem::Iroh,
     ticket: DocTicket,
     author: AuthorId,
 }
 
 impl Tasks {
-    pub async fn new(ticket: Option<String>, iroh: iroh::client::mem::Iroh) -> anyhow::Result<Self> {
-        let author = iroh.create_author().await?;
+    pub async fn new(
+        ticket: Option<String>,
+        node: Iroh<FlumeConnection<ProviderResponse, ProviderRequest>>,
+    ) -> anyhow::Result<Self> {
+        let author = node.authors.create().await?;
 
         let doc = match ticket {
-            None => {
-                iroh.create_doc().await?
-            }
+            None => node.docs.create().await?,
             Some(ticket) => {
                 let ticket = DocTicket::from_str(&ticket)?;
-                iroh.import_doc(ticket).await?
+                node.docs.import(ticket).await?
             }
         };
 
         let ticket = doc.share(ShareMode::Write).await?;
 
         Ok(Tasks {
+            node,
             author,
             doc,
             ticket,
-            iroh,
         })
     }
 
@@ -147,23 +132,23 @@ impl Tasks {
         if label.len() >= MAX_LABEL_LEN {
             bail!("label is too long, must be {MAX_LABEL_LEN} or shorter");
         }
-       let mut task =  self.get_task(id.clone()).await?;
-       task.label = label;
-       self.update_task(id.as_bytes(), task).await
+        let mut task = self.get_task(id.clone()).await?;
+        task.label = label;
+        self.update_task(id.as_bytes(), task).await
     }
 
     pub async fn get_tasks(&self) -> anyhow::Result<Vec<Task>> {
-        let mut entries = self.doc.get_all_keys_latest().await?;
-        let mut hash_entries: HashMap<Vec<u8>, SignedEntry> = HashMap::new();
+        let mut entries = self.doc.get_many(iroh::sync::store::GetFilter::All).await?;
+        let mut hash_entries: HashMap<Vec<u8>, Entry> = HashMap::new();
 
         // only get most recent entry for the key
         // wish this had an easier api -> get_latest_for_each_key?
         while let Some(entry) = entries.next().await {
             let entry = entry?;
-            let id = entry.entry().id();
+            let id = entry.id();
             if let Some(other_entry) = hash_entries.get(id.key()) {
-                let other_timestamp = other_entry.entry().record().timestamp();
-                let this_timestamp = entry.entry().record().timestamp();
+                let other_timestamp = other_entry.record().timestamp();
+                let this_timestamp = entry.record().timestamp();
                 if this_timestamp > other_timestamp {
                     hash_entries.insert(id.key().to_owned(), entry);
                 }
@@ -196,59 +181,24 @@ impl Tasks {
     }
 
     async fn get_task(&self, id: String) -> anyhow::Result<Task> {
-        let entry = self.doc.get_latest_by_key(id.as_bytes().to_vec()).await?;
+        // TODO - b5 - how are Getfilter's ordered in this context? latest timestamp? I hope so
+        let entry = self
+            .doc
+            .get_many(iroh::sync::store::GetFilter::Prefix(id.as_bytes().to_vec()))
+            .await?
+            .next()
+            .await
+            .ok_or_else(|| anyhow::anyhow!("no task found"))??;
+
+        // let entry = self.doc.get_latest_by_key(id.as_bytes().to_vec()).await?;
         self.task_from_entry(&entry).await
     }
 
-    async fn task_from_entry(&self, entry: &SignedEntry) -> anyhow::Result<Task> {
-        let id = String::from_utf8(entry.entry().id().key().to_owned())?;
-        match self.doc.get_content_bytes(entry).await {
+    async fn task_from_entry(&self, entry: &Entry) -> anyhow::Result<Task> {
+        let id = String::from_utf8(entry.key().to_owned())?;
+        match self.node.blobs.read_to_bytes(entry.content_hash()).await {
             Ok(b) => Task::from_bytes(b),
-            Err(_) => Ok(Task::missing_task(id.clone())),
+            Err(_) => Ok(Task::missing_task(id)),
         }
-    }
-}
-
-/// TODO: make actual error
-#[derive(Debug)]
-pub enum UpdateError {
-    NoMoreUpdates,
-    GetTasksError,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Ticket {
-    topic: TopicId,
-    peers: Vec<PeerSource>,
-}
-impl Ticket {
-    /// Deserializes from bytes.
-    fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
-        postcard::from_bytes(bytes).map_err(Into::into)
-    }
-    /// Serializes to bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        postcard::to_stdvec(self).expect("postcard::to_stdvec is infallible")
-    }
-}
-
-/// Serializes to base32.
-impl fmt::Display for Ticket {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let encoded = self.to_bytes();
-        let mut text = data_encoding::BASE32_NOPAD.encode(&encoded);
-        text.make_ascii_lowercase();
-        write!(f, "{text}")
-    }
-}
-
-/// Deserializes from base32.
-impl FromStr for Ticket {
-    type Err = anyhow::Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes = data_encoding::BASE32_NOPAD.decode(s.to_ascii_uppercase().as_bytes())?;
-        let slf = Self::from_bytes(&bytes)?;
-        Ok(slf)
     }
 }
