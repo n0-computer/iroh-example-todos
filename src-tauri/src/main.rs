@@ -2,18 +2,21 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
+mod iroh_node;
 mod tasks;
 mod todo;
-mod iroh_node;
+
+use std::net::SocketAddr;
+use std::sync::Mutex;
 
 use anyhow::Result;
-use std::sync::Mutex;
-use std::net::SocketAddr;
+use futures::StreamExt;
+use iroh::{
+    net::{defaults::default_derp_map, key::SecretKey},
+    sync_engine::LiveEvent,
+};
 use tauri::Manager;
 use tokio::sync::{mpsc, oneshot};
-use futures::{Stream, StreamExt};
-use iroh_net::defaults::default_derp_map;
-use iroh_net::tls::Keypair;
 
 use self::tasks::{Task, Tasks};
 use self::todo::{Todo, TodoApp};
@@ -32,8 +35,8 @@ fn main() {
             let handle = app.handle();
             #[cfg(debug_assertions)] // only include this code on debug builds
             {
-              let window = app.get_window("main").unwrap();
-              window.open_devtools();
+                let window = app.get_window("main").unwrap();
+                window.open_devtools();
             }
             tauri::async_runtime::spawn(async move {
                 println!("starting backend...");
@@ -63,7 +66,7 @@ enum Cmd {
     /// Create a new todo
     Add { id: String, label: String },
     /// Change description of the todo
-    Update {id: String, label: String},
+    Update { id: String, label: String },
     /// Toggle whether or not the todo is done
     ToggleDone { id: String },
     /// Remove a todo
@@ -83,7 +86,7 @@ enum CmdAnswer {
     Ok,
     UnexpectedCmd,
     Ls(Vec<(String, Task)>),
-    Ticket(String)
+    Ticket(String),
 }
 
 #[tauri::command]
@@ -114,10 +117,7 @@ async fn new_list(
 ) -> Result<(), String> {
     println!("new_list called from app");
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::NewList, tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::NewList, tx)).await.unwrap();
     rx.await.unwrap();
     Ok(())
 }
@@ -136,17 +136,14 @@ async fn new_todo(
         app.new_todo(todo)
     };
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::Add { id, label }, tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::Add { id, label }, tx)).await.unwrap();
     rx.await.unwrap();
     Ok(result)
 }
 
 #[tauri::command]
 async fn update_todo(
-    state: tauri::State<'_, AppState>,
+    // state: tauri::State<'_, AppState>,
     todo: Todo,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<(), String> {
@@ -154,42 +151,33 @@ async fn update_todo(
     let id = todo.id;
     let label = todo.label;
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::Update {id, label},  tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::Update { id, label }, tx)).await.unwrap();
     rx.await.unwrap();
     Ok(())
 }
 
 #[tauri::command]
 async fn toggle_done(
-    state: tauri::State<'_, AppState>,
+    // state: tauri::State<'_, AppState>,
     id: String,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<bool, String> {
     println!("toggle_done called from app");
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::ToggleDone {id},  tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::ToggleDone { id }, tx)).await.unwrap();
     rx.await.unwrap();
     Ok(true)
 }
 
 #[tauri::command]
 async fn delete(
-    state: tauri::State<'_, AppState>,
+    // state: tauri::State<'_, AppState>,
     id: String,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<bool, String> {
     println!("delete called from app");
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::Delete {id},  tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::Delete { id }, tx)).await.unwrap();
     rx.await.unwrap();
     Ok(true)
 }
@@ -201,10 +189,7 @@ async fn set_ticket(
 ) -> Result<(), String> {
     println!("set_ticket called from app");
     let (tx, rx) = oneshot::channel();
-    cmd_tx
-        .send((Cmd::SetTicket { ticket }, tx))
-        .await
-        .unwrap();
+    cmd_tx.send((Cmd::SetTicket { ticket }, tx)).await.unwrap();
     rx.await.unwrap();
     Ok(())
 }
@@ -226,7 +211,7 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<(Cmd, oneshot::Sender<CmdAnswer>)>(8);
     handle.manage(cmd_tx);
 
-    let keypair = Keypair::generate();
+    let keypair = SecretKey::generate();
     let derp_map = default_derp_map();
     let bind_addr: SocketAddr = format!("0.0.0.0:0").parse().unwrap();
 
@@ -238,9 +223,9 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
         let iroh_client = iroh.client();
         let tasks_updater = handle.clone();
         tasks = handle_start_command(tasks_updater, cmd, answer_tx, iroh_client).await?;
-        if tasks.is_some() { 
+        if tasks.is_some() {
             println!("tasks created!");
-            break; 
+            break;
         }
     }
 
@@ -251,7 +236,7 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
     let events_handle = tokio::spawn(async move {
         while let Some(Ok(event)) = events.next().await {
             match event {
-                iroh::sync::LiveEvent::InsertRemote => {
+                LiveEvent::InsertRemote { .. } => {
                     // TODO: need an `on_download` callback, this sleep
                     // allows for downloading the content before trying to get it
                     // from the store
@@ -259,7 +244,8 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
                 }
                 _ => {}
             }
-           handle.emit_all("update-all", ())
+            handle
+                .emit_all("update-all", ())
                 .expect("unable to send update event");
         }
     });
@@ -278,7 +264,12 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
     Ok(())
 }
 
-    async fn handle_start_command<R: tauri::Runtime>(handle: tauri::AppHandle<R>, cmd: Cmd, answer_tx: oneshot::Sender<CmdAnswer>, iroh: iroh::client::mem::Iroh) -> Result<Option<Tasks>> {
+async fn handle_start_command<R: tauri::Runtime>(
+    _handle: tauri::AppHandle<R>,
+    cmd: Cmd,
+    answer_tx: oneshot::Sender<CmdAnswer>,
+    iroh: iroh::client::mem::Iroh,
+) -> Result<Option<Tasks>> {
     match cmd {
         Cmd::NewList => {
             println!("new list");
@@ -286,7 +277,7 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
             answer_tx.send(CmdAnswer::Ok).unwrap();
             Ok(Some(tasks))
         }
-        Cmd::SetTicket {ticket } => {
+        Cmd::SetTicket { ticket } => {
             println!("set ticket: {ticket}");
             let tasks = Tasks::new(Some(ticket), iroh).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
@@ -297,12 +288,6 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
             Ok(None)
         }
     }
-}
-
-fn fmt_hash(hash: impl AsRef<[u8]>) -> String {
-    let mut text = data_encoding::BASE32_NOPAD.encode(hash.as_ref());
-    text.make_ascii_lowercase();
-    format!("{}…{}", &text[..5], &text[(text.len() - 2)..])
 }
 
 async fn handle_command(

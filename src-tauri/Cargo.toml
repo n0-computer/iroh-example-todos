@@ -21,17 +21,13 @@ tauri = { version = "1.4", features = ["api-all"] }
 tokio = { version = "1" }
 uuid = { version = "1.4", features = ["v4"] }
 rusqlite = { version = "0.29.0", features = ["bundled"] }
-iroh = { git = "https://github.com/n0-computer/iroh",  branch = "ramfox/todo"}
-iroh-bytes = { git = "https://github.com/n0-computer/iroh", branch = "ramfox/todo" }
-iroh-net = { git = "https://github.com/n0-computer/iroh", branch = "ramfox/todo" }
-iroh-sync = { git = "https://github.com/n0-computer/iroh", branch = "ramfox/todo" }
-iroh-gossip = { git = "https://github.com/n0-computer/iroh", branch = "ramfox/todo" }
-quic-rpc = { version = "0.6", default-features = false, features = ["flume-transport"] }
+iroh = { version = "0.9.0", default-features = false, features = ["flat-db"] }
 once_cell = "1.18"
 futures = "0.3.25"
 bytes = "1"
 postcard = "1"
 num_cpus = { version = "1.15.0" }
+quic-rpc = { version = "0.6", default-features = false, features = ["quinn-transport", "flume-transport"] }
 data-encoding = "2.4.0"
 blake3 = "1.3.3"
 

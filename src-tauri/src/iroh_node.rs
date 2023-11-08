@@ -1,30 +1,29 @@
-use anyhow::{Context, Result};
-use iroh::baomap::{flat::Store as BaoFileStore, mem::Store as BaoMemStore};
-use iroh::node::Node;
-use iroh_bytes::{baomap::Store as BaoStore, util::runtime};
-use iroh_net::derp::DerpMap;
-use iroh_net::tls::Keypair;
-use iroh_sync::store::fs::Store as DocFileStore;
-use iroh_sync::store::memory::Store as DocMemStore;
-use iroh_sync::store::Store as DocStore;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-const DOCS_PATH: &str = "docs";
+use anyhow::{Context, Result};
+use iroh::{
+    bytes::{
+        store::flat::Store as FileStore, store::mem::Store as MemStore, store::Store, util::runtime,
+    },
+    net::{derp::DerpMap, key::SecretKey},
+    node::Node,
+    sync::store::Store as DocStore,
+};
 
 pub enum Iroh {
-    FileStore(Node<BaoFileStore, DocFileStore>),
-    MemStore(Node<BaoMemStore, DocMemStore>),
+    FileStore(Node<FileStore>),
+    MemStore(Node<MemStore>),
 }
 
 impl Iroh {
     pub async fn new(
-        keypair: Keypair,
+        keypair: SecretKey,
         derp_map: Option<DerpMap>,
         bind_addr: SocketAddr,
         data_root: Option<PathBuf>,
     ) -> Result<Self> {
-        let rt = runtime::Handle::from_currrent(num_cpus::get())?;
+        let rt = runtime::Handle::from_current(num_cpus::get())?;
         match data_root {
             Some(path) => Ok(Iroh::FileStore(
                 create_iroh_node_file_store(&rt, keypair, derp_map, bind_addr, path).await?,
@@ -52,14 +51,15 @@ impl Iroh {
 
 pub async fn create_iroh_node_mem_store(
     rt: runtime::Handle,
-    keypair: Keypair,
+    keypair: SecretKey,
     derp_map: Option<DerpMap>,
     bind_addr: SocketAddr,
-) -> Result<Node<BaoMemStore, DocMemStore>> {
+) -> Result<Node<MemStore>> {
     let rt_handle = rt.clone();
+    let doc_store = iroh::sync::store::memory::Store::default();
     create_iroh_node(
-        BaoMemStore::new(rt),
-        DocMemStore::default(),
+        MemStore::new(rt),
+        doc_store,
         &rt_handle,
         keypair,
         derp_map,
@@ -70,11 +70,11 @@ pub async fn create_iroh_node_mem_store(
 
 pub async fn create_iroh_node_file_store(
     rt: &runtime::Handle,
-    keypair: Keypair,
+    keypair: SecretKey,
     derp_map: Option<DerpMap>,
     bind_addr: SocketAddr,
     data_root: PathBuf,
-) -> Result<Node<BaoFileStore, DocFileStore>> {
+) -> Result<Node<FileStore>> {
     let path = {
         if data_root.is_absolute() {
             data_root
@@ -82,38 +82,35 @@ pub async fn create_iroh_node_file_store(
             std::env::current_dir()?.join(data_root)
         }
     };
-    let bao_store = {
+    let store = {
         tokio::fs::create_dir_all(&path).await?;
-        BaoFileStore::load(&path, &path, &rt)
+        FileStore::load(&path, &path, &path, &rt)
             .await
             .with_context(|| format!("Failed to load tasks database from {}", path.display()))?
     };
-    let doc_store = {
-        let path = path.join(DOCS_PATH);
-        DocFileStore::new(path.clone()).with_context(|| {
-            format!("Failed to load docs database from {:?}", path.display())
-        })?
-    };
 
-    create_iroh_node(bao_store, doc_store, rt, keypair, derp_map, bind_addr).await
+    let docs_path = path.join("docs.db");
+    let docs = iroh::sync::store::fs::Store::new(&docs_path)?;
+
+    create_iroh_node(store, docs, rt, keypair, derp_map, bind_addr).await
 }
 
-pub async fn create_iroh_node<B: BaoStore, D: DocStore>(
-    bao_store: B,
-    doc_store: D,
+pub async fn create_iroh_node<S: Store, D: DocStore>(
+    blobs_store: S,
+    docs_store: D,
     rt: &runtime::Handle,
-    keypair: Keypair,
-    derp_map: Option<DerpMap>,
+    secret_key: SecretKey,
+    _derp_map: Option<DerpMap>,
     bind_addr: SocketAddr,
-) -> Result<Node<B, D>> {
-    let mut builder = Node::builder(bao_store, doc_store);
-    if let Some(dm) = derp_map {
-        builder = builder.derp_map(dm);
-    }
+) -> Result<Node<S>> {
+    let builder = Node::builder(blobs_store, docs_store);
+    // if let Some(dm) = derp_map {
+    //     builder = builder.derp_map(dm);
+    // }
     builder
         .bind_addr(bind_addr)
         .runtime(rt)
-        .keypair(keypair)
+        .secret_key(secret_key)
         .spawn()
         .await
 }
