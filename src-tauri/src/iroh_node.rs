@@ -36,13 +36,6 @@ impl Iroh {
             Iroh::MemStore(node) => node.client(),
         }
     }
-
-    pub fn shutdown(self) {
-        match self {
-            Iroh::FileStore(node) => node.shutdown(),
-            Iroh::MemStore(node) => node.shutdown(),
-        }
-    }
 }
 
 pub async fn create_iroh_node_mem_store(

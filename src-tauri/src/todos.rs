@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr};
+use std::str::FromStr;
 
 use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
@@ -137,27 +137,11 @@ impl Todos {
             .doc
             .get_many(iroh::sync::store::Query::single_latest_per_key())
             .await?;
-        let mut hash_entries: HashMap<Vec<u8>, Entry> = HashMap::new();
 
-        // only get most recent entry for the key
-        // wish this had an easier api -> get_latest_for_each_key?
+        let mut todos = Vec::new();
         while let Some(entry) = entries.next().await {
             let entry = entry?;
-            let id = entry.id();
-            if let Some(other_entry) = hash_entries.get(id.key()) {
-                let other_timestamp = other_entry.timestamp();
-                let this_timestamp = entry.timestamp();
-                if this_timestamp > other_timestamp {
-                    hash_entries.insert(id.key().to_owned(), entry);
-                }
-            } else {
-                hash_entries.insert(id.key().to_owned(), entry);
-            }
-        }
-        let entries: Vec<_> = hash_entries.values().collect();
-        let mut todos = Vec::new();
-        for entry in entries {
-            let todo = self.todo_from_entry(entry).await?;
+            let todo = self.todo_from_entry(&entry).await?;
             if !todo.is_delete {
                 todos.push(todo);
             }
