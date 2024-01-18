@@ -38,7 +38,7 @@ impl Iroh {
     }
 }
 
-pub async fn create_iroh_node_mem_store(
+async fn create_iroh_node_mem_store(
     rt: &LocalPoolHandle,
     keypair: SecretKey,
 ) -> Result<Node<MemStore>> {
@@ -46,7 +46,7 @@ pub async fn create_iroh_node_mem_store(
     create_iroh_node(MemStore::new(), doc_store, rt, keypair).await
 }
 
-pub async fn create_iroh_node_file_store(
+async fn create_iroh_node_file_store(
     rt: &LocalPoolHandle,
     keypair: SecretKey,
     data_root: PathBuf,
@@ -71,12 +71,15 @@ pub async fn create_iroh_node_file_store(
     create_iroh_node(store, docs, rt, keypair).await
 }
 
-pub async fn create_iroh_node<S: Store, D: DocStore>(
+async fn create_iroh_node<S: Store, D: DocStore>(
     blobs_store: S,
     docs_store: D,
     rt: &LocalPoolHandle,
     secret_key: SecretKey,
 ) -> Result<Node<S>> {
-    let builder = Node::builder(blobs_store, docs_store);
-    builder.local_pool(rt).secret_key(secret_key).spawn().await
+    Node::builder(blobs_store, docs_store)
+        .local_pool(rt)
+        .secret_key(secret_key)
+        .spawn()
+        .await
 }
