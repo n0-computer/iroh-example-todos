@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use iroh::{
     bytes::{store::flat::Store as FileStore, store::mem::Store as MemStore, store::Store},
-    net::{derp::DerpMap, key::SecretKey},
+    net::key::SecretKey,
     node::Node,
     sync::store::Store as DocStore,
 };
@@ -15,18 +15,17 @@ pub enum Iroh {
 }
 
 impl Iroh {
-    pub async fn new(
-        keypair: SecretKey,
-        derp_map: Option<DerpMap>,
-        data_root: Option<PathBuf>,
-    ) -> Result<Self> {
+    pub async fn new(data_root: Option<PathBuf>) -> Result<Self> {
+        // TODO: persist
+        let keypair = SecretKey::generate();
         let rt = LocalPoolHandle::new(1);
+
         match data_root {
             Some(path) => Ok(Iroh::FileStore(
-                create_iroh_node_file_store(&rt, keypair, derp_map, path).await?,
+                create_iroh_node_file_store(&rt, keypair, path).await?,
             )),
             None => Ok(Iroh::MemStore(
-                create_iroh_node_mem_store(&rt, keypair, derp_map).await?,
+                create_iroh_node_mem_store(&rt, keypair).await?,
             )),
         }
     }
@@ -49,16 +48,14 @@ impl Iroh {
 pub async fn create_iroh_node_mem_store(
     rt: &LocalPoolHandle,
     keypair: SecretKey,
-    derp_map: Option<DerpMap>,
 ) -> Result<Node<MemStore>> {
     let doc_store = iroh::sync::store::memory::Store::default();
-    create_iroh_node(MemStore::new(), doc_store, rt, keypair, derp_map).await
+    create_iroh_node(MemStore::new(), doc_store, rt, keypair).await
 }
 
 pub async fn create_iroh_node_file_store(
     rt: &LocalPoolHandle,
     keypair: SecretKey,
-    derp_map: Option<DerpMap>,
     data_root: PathBuf,
 ) -> Result<Node<FileStore>> {
     let path = {
@@ -78,7 +75,7 @@ pub async fn create_iroh_node_file_store(
     let docs_path = path.join("docs.db");
     let docs = iroh::sync::store::fs::Store::new(&docs_path)?;
 
-    create_iroh_node(store, docs, rt, keypair, derp_map).await
+    create_iroh_node(store, docs, rt, keypair).await
 }
 
 pub async fn create_iroh_node<S: Store, D: DocStore>(
@@ -86,11 +83,7 @@ pub async fn create_iroh_node<S: Store, D: DocStore>(
     docs_store: D,
     rt: &LocalPoolHandle,
     secret_key: SecretKey,
-    _derp_map: Option<DerpMap>,
 ) -> Result<Node<S>> {
     let builder = Node::builder(blobs_store, docs_store);
-    // if let Some(dm) = derp_map {
-    //     builder = builder.derp_map(dm);
-    // }
     builder.local_pool(rt).secret_key(secret_key).spawn().await
 }
