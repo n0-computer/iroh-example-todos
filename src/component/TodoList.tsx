@@ -24,7 +24,7 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
   }, [])
 
   const addTodo = async (label: string, id: string) => {
-    invoke('new_todo', { todo: { id, label, done: false, is_delete: false } })
+    invoke('new_todo', { todo: { id, label, done: false, is_delete: false, created: 0 } })
   }
 
   const onAddTodo = useCallback<KeyboardEventHandler<HTMLInputElement>>(
@@ -49,9 +49,7 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
       return oldTodos.filter((todo) => {
         const isDone = todo.done
         if (isDone) {
-          invoke('update_todo', {
-            todo: { ...todo, is_delete: true }
-          })
+          invoke('delete', { id: todo.id })
           return false
         }
         return true
