@@ -49,9 +49,7 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
       return oldTodos.filter((todo) => {
         const isDone = todo.done
         if (isDone) {
-          invoke('update_todo', {
-            todo: { ...todo, is_delete: true }
-          })
+          invoke('delete', { id: todo.id })
           return false
         }
         return true

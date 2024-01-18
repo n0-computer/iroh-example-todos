@@ -7,7 +7,7 @@ mod todos;
 
 use anyhow::Result;
 use futures::StreamExt;
-use iroh::client::LiveEvent;
+use iroh::{client::LiveEvent, sync::ContentStatus};
 use tauri::Manager;
 use tokio::sync::Mutex;
 
@@ -38,8 +38,11 @@ impl AppState {
         let events_handle = tokio::spawn(async move {
             while let Some(Ok(event)) = events.next().await {
                 match event {
-                    LiveEvent::InsertRemote { .. } => {
-                        // don't do anything yet, content is not available yet
+                    LiveEvent::InsertRemote { content_status, .. } => {
+                        // Only update if the we already have the content. Likely to happen when a remote user toggles "done".
+                        if content_status == ContentStatus::Complete {
+                            app_handle.emit_all("update-all", ()).ok();
+                        }
                     }
                     LiveEvent::InsertLocal { .. } | LiveEvent::ContentReady { .. } => {
                         app_handle.emit_all("update-all", ()).ok();
