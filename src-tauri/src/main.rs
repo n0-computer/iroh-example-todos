@@ -7,7 +7,6 @@ mod tasks;
 mod todo;
 
 use std::net::SocketAddr;
-use std::sync::Mutex;
 
 use anyhow::Result;
 use futures::StreamExt;
@@ -19,18 +18,13 @@ use tauri::Manager;
 use tokio::sync::{mpsc, oneshot};
 
 use self::tasks::{Task, Tasks};
-use self::todo::{Todo, TodoApp};
+use self::todo::Todo;
 
-struct AppState {
-    app: Mutex<TodoApp>,
-}
+struct AppState {}
 
 fn main() {
-    let app = TodoApp::new().unwrap();
     tauri::Builder::default()
-        .manage(AppState {
-            app: Mutex::from(app),
-        })
+        .manage(AppState {})
         .setup(|app| {
             let handle = app.handle();
             #[cfg(debug_assertions)] // only include this code on debug builds
@@ -124,26 +118,20 @@ async fn new_list(
 
 #[tauri::command]
 async fn new_todo(
-    state: tauri::State<'_, AppState>,
     todo: Todo,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     println!("new_todo called from app");
     let label = todo.label.clone();
     let id = todo.id.clone();
-    let result = {
-        let app = state.app.lock().unwrap();
-        app.new_todo(todo)
-    };
     let (tx, rx) = oneshot::channel();
     cmd_tx.send((Cmd::Add { id, label }, tx)).await.unwrap();
     rx.await.unwrap();
-    Ok(result)
+    Ok(())
 }
 
 #[tauri::command]
 async fn update_todo(
-    // state: tauri::State<'_, AppState>,
     todo: Todo,
     cmd_tx: tauri::State<'_, mpsc::Sender<(Cmd, oneshot::Sender<CmdAnswer>)>>,
 ) -> Result<(), String> {
