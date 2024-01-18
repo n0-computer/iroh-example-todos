@@ -24,7 +24,7 @@ const TodoList: React.FC<{ todos: Todo[] }> = ({ todos }) => {
   }, [])
 
   const addTodo = async (label: string, id: string) => {
-    invoke('new_todo', { todo: { id, label, done: false, is_delete: false } })
+    invoke('new_todo', { todo: { id, label, done: false, is_delete: false, created: 0 } })
   }
 
   const onAddTodo = useCallback<KeyboardEventHandler<HTMLInputElement>>(
