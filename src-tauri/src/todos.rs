@@ -1,50 +1,44 @@
 use std::{collections::HashMap, str::FromStr};
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use iroh::client::{Doc, Iroh};
+use iroh::client::{Doc, Entry, Iroh, LiveEvent};
 use iroh::rpc_protocol::{DocTicket, ProviderRequest, ProviderResponse, ShareMode};
-use iroh::sync::{AuthorId, Entry};
-use iroh::sync_engine::LiveEvent;
+use iroh::sync::AuthorId;
 use quic_rpc::transport::flume::FlumeConnection;
 use serde::{Deserialize, Serialize};
 
+/// Todo in a list of todos.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-/// Task in a list of tasks
-pub struct Task {
-    /// Description of the task
+pub struct Todo {
+    /// String id
+    pub id: String,
+    /// Description of the todo
     /// Limited to 2000 characters
     pub label: String,
     /// Record creation timestamp. Counted as micros since the Unix epoch.
     pub created: u64,
-    /// Whether or not the task has been completed. Done tasks will show up in the task list until
+    /// Whether or not the todo has been completed. Done todos will show up in the todo list until
     /// they are archived.
     pub done: bool,
-    /// Indicates whether or not the task is tombstoned
+    /// Indicates whether or not the todo is tombstoned
     pub is_delete: bool,
-    /// String id
-    pub id: String,
 }
 
-impl Task {
+impl Todo {
     fn from_bytes(bytes: Bytes) -> anyhow::Result<Self> {
-        let task = postcard::from_bytes(&bytes)?;
-        Ok(task)
+        let todo = serde_json::from_slice(&bytes).context("invalid json")?;
+        Ok(todo)
     }
 
-    fn as_bytes(self) -> anyhow::Result<Bytes> {
-        let mut buf = bytes::BytesMut::zeroed(MAX_TASK_SIZE);
-        postcard::to_slice(&self, &mut buf)?;
-        Ok(buf.freeze())
+    fn as_bytes(&self) -> anyhow::Result<Bytes> {
+        let buf = serde_json::to_vec(self)?;
+        ensure!(buf.len() < MAX_TODO_SIZE, "todo too large");
+        Ok(buf.into())
     }
 
-    fn as_vec(self) -> anyhow::Result<Vec<u8>> {
-        let buf = self.as_bytes()?;
-        Ok(buf[..].to_vec())
-    }
-
-    fn missing_task(id: String) -> Self {
+    fn missing_todo(id: String) -> Self {
         Self {
             label: String::from("Missing Content"),
             created: 0,
@@ -55,18 +49,18 @@ impl Task {
     }
 }
 
-const MAX_TASK_SIZE: usize = 2 * 1024;
+const MAX_TODO_SIZE: usize = 2 * 1024;
 const MAX_LABEL_LEN: usize = 2 * 1000;
 
-/// List of tasks, including completed tasks that have not been archived
-pub struct Tasks {
+/// List of todos, including completed todos that have not been archived
+pub struct Todos {
     node: Iroh<FlumeConnection<ProviderResponse, ProviderRequest>>,
     doc: Doc<FlumeConnection<ProviderResponse, ProviderRequest>>,
     ticket: DocTicket,
     author: AuthorId,
 }
 
-impl Tasks {
+impl Todos {
     pub async fn new(
         ticket: Option<String>,
         node: Iroh<FlumeConnection<ProviderResponse, ProviderRequest>>,
@@ -83,7 +77,7 @@ impl Tasks {
 
         let ticket = doc.share(ShareMode::Write).await?;
 
-        Ok(Tasks {
+        Ok(Todos {
             node,
             author,
             doc,
@@ -107,38 +101,42 @@ impl Tasks {
             .duration_since(std::time::SystemTime::UNIX_EPOCH)
             .expect("time drift")
             .as_secs();
-        let task = Task {
+        let todo = Todo {
             label,
             created,
             done: false,
             is_delete: false,
             id: id.clone(),
         };
-        self.insert_bytes(id.as_bytes(), task.as_vec()?).await
+        self.insert_bytes(id.as_bytes(), todo.as_bytes()?).await
     }
+
     pub async fn toggle_done(&mut self, id: String) -> anyhow::Result<()> {
-        let mut task = self.get_task(id.clone()).await?;
-        task.done = !task.done;
-        self.update_task(id.as_bytes(), task).await
+        let mut todo = self.get_todo(id.clone()).await?;
+        todo.done = !todo.done;
+        self.update_todo(id.as_bytes(), todo).await
     }
 
     pub async fn delete(&mut self, id: String) -> anyhow::Result<()> {
-        let mut task = self.get_task(id.clone()).await?;
-        task.is_delete = true;
-        self.update_task(id.as_bytes(), task).await
+        let mut todo = self.get_todo(id.clone()).await?;
+        todo.is_delete = true;
+        self.update_todo(id.as_bytes(), todo).await
     }
 
     pub async fn update(&mut self, id: String, label: String) -> anyhow::Result<()> {
         if label.len() >= MAX_LABEL_LEN {
             bail!("label is too long, must be {MAX_LABEL_LEN} or shorter");
         }
-        let mut task = self.get_task(id.clone()).await?;
-        task.label = label;
-        self.update_task(id.as_bytes(), task).await
+        let mut todo = self.get_todo(id.clone()).await?;
+        todo.label = label;
+        self.update_todo(id.as_bytes(), todo).await
     }
 
-    pub async fn get_tasks(&self) -> anyhow::Result<Vec<Task>> {
-        let mut entries = self.doc.get_many(iroh::sync::store::GetFilter::All).await?;
+    pub async fn get_todos(&self) -> anyhow::Result<Vec<Todo>> {
+        let mut entries = self
+            .doc
+            .get_many(iroh::sync::store::Query::single_latest_per_key())
+            .await?;
         let mut hash_entries: HashMap<Vec<u8>, Entry> = HashMap::new();
 
         // only get most recent entry for the key
@@ -147,8 +145,8 @@ impl Tasks {
             let entry = entry?;
             let id = entry.id();
             if let Some(other_entry) = hash_entries.get(id.key()) {
-                let other_timestamp = other_entry.record().timestamp();
-                let this_timestamp = entry.record().timestamp();
+                let other_timestamp = other_entry.timestamp();
+                let this_timestamp = entry.timestamp();
                 if this_timestamp > other_timestamp {
                     hash_entries.insert(id.key().to_owned(), entry);
                 }
@@ -157,48 +155,46 @@ impl Tasks {
             }
         }
         let entries: Vec<_> = hash_entries.values().collect();
-        let mut tasks = Vec::new();
+        let mut todos = Vec::new();
         for entry in entries {
-            let task = self.task_from_entry(entry).await?;
-            if !task.is_delete {
-                tasks.push(task);
+            let todo = self.todo_from_entry(entry).await?;
+            if !todo.is_delete {
+                todos.push(todo);
             }
         }
-        tasks.sort_by_key(|t| t.created);
-        Ok(tasks)
+        todos.sort_by_key(|t| t.created);
+        Ok(todos)
     }
 
-    async fn insert_bytes(&self, key: impl AsRef<[u8]>, content: Vec<u8>) -> anyhow::Result<()> {
+    async fn insert_bytes(&self, key: impl AsRef<[u8]>, content: Bytes) -> anyhow::Result<()> {
         self.doc
             .set_bytes(self.author, key.as_ref().to_vec(), content)
             .await?;
         Ok(())
     }
 
-    async fn update_task(&mut self, key: impl AsRef<[u8]>, task: Task) -> anyhow::Result<()> {
-        let content = task.as_vec()?;
+    async fn update_todo(&mut self, key: impl AsRef<[u8]>, todo: Todo) -> anyhow::Result<()> {
+        let content = todo.as_bytes()?;
         self.insert_bytes(key, content).await
     }
 
-    async fn get_task(&self, id: String) -> anyhow::Result<Task> {
-        // TODO - b5 - how are Getfilter's ordered in this context? latest timestamp? I hope so
+    async fn get_todo(&self, id: String) -> anyhow::Result<Todo> {
         let entry = self
             .doc
-            .get_many(iroh::sync::store::GetFilter::Prefix(id.as_bytes().to_vec()))
+            .get_many(iroh::sync::store::Query::single_latest_per_key().key_exact(id))
             .await?
             .next()
             .await
-            .ok_or_else(|| anyhow::anyhow!("no task found"))??;
+            .ok_or_else(|| anyhow::anyhow!("no todo found"))??;
 
-        // let entry = self.doc.get_latest_by_key(id.as_bytes().to_vec()).await?;
-        self.task_from_entry(&entry).await
+        self.todo_from_entry(&entry).await
     }
 
-    async fn task_from_entry(&self, entry: &Entry) -> anyhow::Result<Task> {
-        let id = String::from_utf8(entry.key().to_owned())?;
+    async fn todo_from_entry(&self, entry: &Entry) -> anyhow::Result<Todo> {
+        let id = String::from_utf8(entry.key().to_owned()).context("invalid key")?;
         match self.node.blobs.read_to_bytes(entry.content_hash()).await {
-            Ok(b) => Task::from_bytes(b),
-            Err(_) => Ok(Task::missing_task(id)),
+            Ok(b) => Todo::from_bytes(b),
+            Err(_) => Ok(Todo::missing_todo(id)),
         }
     }
 }

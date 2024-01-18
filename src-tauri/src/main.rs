@@ -3,22 +3,16 @@
     windows_subsystem = "windows"
 )]
 mod iroh_node;
-mod tasks;
-mod todo;
-
-use std::net::SocketAddr;
+mod todos;
 
 use anyhow::Result;
 use futures::StreamExt;
-use iroh::{
-    net::{defaults::default_derp_map, key::SecretKey},
-    sync_engine::LiveEvent,
-};
+use iroh::client::LiveEvent;
+use iroh::net::{defaults::default_derp_map, key::SecretKey};
 use tauri::Manager;
 use tokio::sync::{mpsc, oneshot};
 
-use self::tasks::{Task, Tasks};
-use self::todo::Todo;
+use self::todos::{Todo, Todos};
 
 struct AppState {}
 
@@ -79,7 +73,7 @@ enum Cmd {
 enum CmdAnswer {
     Ok,
     UnexpectedCmd,
-    Ls(Vec<(String, Task)>),
+    Ls(Vec<(String, Todo)>),
     Ticket(String),
 }
 
@@ -90,16 +84,8 @@ async fn get_todos(
     println!("get_todos called from app");
     let (tx, rx) = oneshot::channel();
     cmd_tx.send((Cmd::Ls, tx)).await.unwrap();
-    if let CmdAnswer::Ls(tasks) = rx.await.unwrap() {
-        let todos = tasks
-            .into_iter()
-            .map(|(id, t)| Todo {
-                id,
-                label: t.label,
-                done: t.done,
-                is_delete: t.is_delete,
-            })
-            .collect();
+    if let CmdAnswer::Ls(todos) = rx.await.unwrap() {
+        let todos = todos.into_iter().map(|(_id, t)| t).collect();
         return Ok(todos);
     }
     unreachable!("invalid answer");
@@ -201,26 +187,25 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
 
     let keypair = SecretKey::generate();
     let derp_map = default_derp_map();
-    let bind_addr: SocketAddr = format!("0.0.0.0:0").parse().unwrap();
 
-    let iroh = iroh_node::Iroh::new(keypair, Some(derp_map), bind_addr, None).await?;
+    let iroh = iroh_node::Iroh::new(keypair, Some(derp_map), None).await?;
 
-    let mut tasks = None;
-    println!("waiting for task create command...");
+    let mut todos = None;
+    println!("waiting for todo create command...");
     while let Some((cmd, answer_tx)) = cmd_rx.recv().await {
         let iroh_client = iroh.client();
-        let tasks_updater = handle.clone();
-        tasks = handle_start_command(tasks_updater, cmd, answer_tx, iroh_client).await?;
-        if tasks.is_some() {
-            println!("tasks created!");
+        let todos_updater = handle.clone();
+        todos = handle_start_command(todos_updater, cmd, answer_tx, iroh_client).await?;
+        if todos.is_some() {
+            println!("todos created!");
             break;
         }
     }
 
-    let mut tasks = tasks.expect("checked above");
-    println!("tasks list created!");
+    let mut todos = todos.expect("checked above");
+    println!("todos list created!");
 
-    let mut events = tasks.doc_subscribe().await?;
+    let mut events = todos.doc_subscribe().await?;
     let events_handle = tokio::spawn(async move {
         while let Some(Ok(event)) = events.next().await {
             match event {
@@ -240,13 +225,13 @@ async fn run<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
 
     println!("waiting for cmds...");
     while let Some((cmd, answer_tx)) = cmd_rx.recv().await {
-        let res = handle_command(cmd, &mut tasks, answer_tx).await;
+        let res = handle_command(cmd, &mut todos, answer_tx).await;
         if let Err(err) = res {
             println!("> error: {err}");
         }
     }
 
-    println!("shutting down tasks list...");
+    println!("shutting down todos list...");
     events_handle.abort();
     iroh.shutdown();
     Ok(())
@@ -257,19 +242,19 @@ async fn handle_start_command<R: tauri::Runtime>(
     cmd: Cmd,
     answer_tx: oneshot::Sender<CmdAnswer>,
     iroh: iroh::client::mem::Iroh,
-) -> Result<Option<Tasks>> {
+) -> Result<Option<Todos>> {
     match cmd {
         Cmd::NewList => {
             println!("new list");
-            let tasks = Tasks::new(None, iroh).await?;
+            let todos = Todos::new(None, iroh).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
-            Ok(Some(tasks))
+            Ok(Some(todos))
         }
         Cmd::SetTicket { ticket } => {
             println!("set ticket: {ticket}");
-            let tasks = Tasks::new(Some(ticket), iroh).await?;
+            let todos = Todos::new(Some(ticket), iroh).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
-            Ok(Some(tasks))
+            Ok(Some(todos))
         }
         _ => {
             answer_tx.send(CmdAnswer::UnexpectedCmd).unwrap();
@@ -280,34 +265,34 @@ async fn handle_start_command<R: tauri::Runtime>(
 
 async fn handle_command(
     cmd: Cmd,
-    task: &mut Tasks,
+    todo: &mut Todos,
     answer_tx: oneshot::Sender<CmdAnswer>,
 ) -> Result<()> {
     match cmd {
         Cmd::Add { id, label } => {
             println!("adding todo: {label}");
-            task.add(id, label).await?;
+            todo.add(id, label).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
         }
         Cmd::ToggleDone { id } => {
-            task.toggle_done(id).await?;
+            todo.toggle_done(id).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
         }
         Cmd::Delete { id } => {
-            task.delete(id).await?;
+            todo.delete(id).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
         }
         Cmd::Ls => {
-            let tasks = task.get_tasks().await?;
-            let tasks = tasks.into_iter().map(|t| (t.id.clone(), t)).collect();
-            answer_tx.send(CmdAnswer::Ls(tasks)).unwrap();
+            let todos = todo.get_todos().await?;
+            let todos = todos.into_iter().map(|t| (t.id.clone(), t)).collect();
+            answer_tx.send(CmdAnswer::Ls(todos)).unwrap();
         }
         Cmd::GetTicket => {
             println!("getting ticket");
-            answer_tx.send(CmdAnswer::Ticket(task.ticket())).unwrap();
+            answer_tx.send(CmdAnswer::Ticket(todo.ticket())).unwrap();
         }
         Cmd::Update { id, label } => {
-            task.update(id, label).await?;
+            todo.update(id, label).await?;
             answer_tx.send(CmdAnswer::Ok).unwrap();
         }
         cmd => {
