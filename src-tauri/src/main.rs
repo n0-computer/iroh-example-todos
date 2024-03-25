@@ -2,10 +2,9 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
-mod iroh_node;
 mod todos;
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use futures::StreamExt;
 use iroh::{client::LiveEvent, sync::ContentStatus};
 use tauri::Manager;
@@ -13,12 +12,34 @@ use tokio::sync::Mutex;
 
 use self::todos::{Todo, Todos};
 
+// this example uses a persistend iroh node stored in the application data directory
+type IrohNode = iroh::node::Node<iroh::bytes::store::fs::Store>;
+
+// setup an iroh node
+async fn setup<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
+    // get the applicaiton data root, join with "iroh_data" to get the data root for the iroh node
+    let data_root = handle
+        .path_resolver()
+        .app_data_dir()
+        .ok_or_else(|| anyhow!("can't get application data directory"))?
+        .join("iroh_data");
+
+    // create the iroh node
+    let node = iroh::node::Node::persistent(data_root)
+        .await?
+        .spawn()
+        .await?;
+    handle.manage(AppState::new(node));
+
+    Ok(())
+}
+
 struct AppState {
     todos: Mutex<Option<(Todos, tokio::task::JoinHandle<()>)>>,
-    iroh: iroh_node::Iroh,
+    iroh: IrohNode,
 }
 impl AppState {
-    fn new(iroh: iroh_node::Iroh) -> Self {
+    fn new(iroh: IrohNode) -> Self {
         AppState {
             todos: Mutex::new(None),
             iroh,
@@ -26,7 +47,7 @@ impl AppState {
     }
 
     fn iroh(&self) -> iroh::client::mem::Iroh {
-        self.iroh.client()
+        self.iroh.client().clone()
     }
 
     async fn init_todos<R: tauri::Runtime>(
@@ -71,6 +92,7 @@ fn main() {
                 let window = app.get_window("main").unwrap();
                 window.open_devtools();
             }
+
             tauri::async_runtime::spawn(async move {
                 println!("starting backend...");
                 if let Err(err) = setup(handle).await {
@@ -186,13 +208,4 @@ async fn get_ticket(state: tauri::State<'_, AppState>) -> Result<String, String>
         return Ok(todos.ticket());
     }
     Err("not initialized".to_string())
-}
-
-async fn setup<R: tauri::Runtime>(handle: tauri::AppHandle<R>) -> Result<()> {
-    // TODO: pass data root
-    let data_root = None;
-    let iroh = iroh_node::Iroh::new(data_root).await?;
-    handle.manage(AppState::new(iroh));
-
-    Ok(())
 }
