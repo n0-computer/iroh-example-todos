@@ -5,7 +5,7 @@
 mod todos;
 
 use anyhow::{anyhow, Result};
-use futures::StreamExt;
+use futures_lite::StreamExt;
 use iroh::{client::LiveEvent, sync::ContentStatus};
 use tauri::Manager;
 use tokio::sync::Mutex;
