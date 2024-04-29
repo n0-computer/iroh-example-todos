@@ -1,3 +1,5 @@
+> Deprated, this project was moved to https://github.com/n0-computer/iroh-examples/tree/main/tauri-todos
+
 # iroh-tauri-todomvc
 
 This TODO app was created as an example for how to use Iroh to add sync and
