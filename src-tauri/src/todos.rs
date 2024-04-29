@@ -2,11 +2,13 @@ use std::str::FromStr;
 
 use anyhow::{bail, ensure, Context, Result};
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
-use iroh::client::{Doc, Entry, Iroh, LiveEvent};
-use iroh::rpc_protocol::{DocTicket, ProviderRequest, ProviderResponse, ShareMode};
+use futures_lite::{Stream, StreamExt};
+use iroh::client::{
+    mem::{Doc, Iroh},
+    Entry, LiveEvent,
+};
+use iroh::rpc_protocol::{DocTicket, ShareMode};
 use iroh::sync::AuthorId;
-use quic_rpc::transport::flume::FlumeConnection;
 use serde::{Deserialize, Serialize};
 
 /// Todo in a list of todos.
@@ -54,17 +56,14 @@ const MAX_LABEL_LEN: usize = 2 * 1000;
 
 /// List of todos, including completed todos that have not been archived
 pub struct Todos {
-    node: Iroh<FlumeConnection<ProviderResponse, ProviderRequest>>,
-    doc: Doc<FlumeConnection<ProviderResponse, ProviderRequest>>,
+    node: Iroh,
+    doc: Doc,
     ticket: DocTicket,
     author: AuthorId,
 }
 
 impl Todos {
-    pub async fn new(
-        ticket: Option<String>,
-        node: Iroh<FlumeConnection<ProviderResponse, ProviderRequest>>,
-    ) -> anyhow::Result<Self> {
+    pub async fn new(ticket: Option<String>, node: Iroh) -> anyhow::Result<Self> {
         let author = node.authors.create().await?;
 
         let doc = match ticket {
@@ -75,7 +74,7 @@ impl Todos {
             }
         };
 
-        let ticket = doc.share(ShareMode::Write).await?;
+        let ticket = doc.share(ShareMode::Write, Default::default()).await?;
 
         Ok(Todos {
             node,
